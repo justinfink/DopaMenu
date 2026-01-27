@@ -1,0 +1,62 @@
+{
+  "expo": {
+    "name": "DopaMenu",
+    "slug": "dopamenu",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "dopamenu",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/images/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#F8F6FA"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.dopamenu.app",
+      "infoPlist": {
+        "NSCalendarsUsageDescription": "DopaMenu uses your calendar to understand your schedule and suggest better alternatives at the right moments."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "backgroundColor": "#F8F6FA"
+      },
+      "package": "com.dopamenu.app",
+      "permissions": [
+        "android.permission.READ_CALENDAR",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.VIBRATE"
+      ]
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/notification-icon.png",
+          "color": "#9B7BB8"
+        }
+      ],
+      [
+        "expo-calendar",
+        {
+          "calendarPermission": "DopaMenu uses your calendar to understand your schedule."
+        }
+      ],
+      "expo-font"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
