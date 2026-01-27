@@ -29,7 +29,8 @@
       "permissions": [
         "android.permission.READ_CALENDAR",
         "android.permission.RECEIVE_BOOT_COMPLETED",
-        "android.permission.VIBRATE"
+        "android.permission.VIBRATE",
+        "android.permission.WRITE_CALENDAR"
       ]
     },
     "web": {
@@ -57,6 +58,12 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "0c185b6b-f75b-4108-9410-df2ba98ae98e"
+      }
     }
   }
 }
