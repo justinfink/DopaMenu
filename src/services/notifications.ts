@@ -4,8 +4,65 @@ import { InterventionDecision } from '../models';
 
 // ============================================
 // Notifications Service
-// Handles intervention notifications
+// Handles intervention notifications and
+// scheduled high-risk time reminders
 // ============================================
+
+// High-risk time configuration
+export interface HighRiskTime {
+  id: string;
+  label: string;
+  hour: number;
+  minute: number;
+  enabled: boolean;
+  daysOfWeek: number[]; // 1=Sunday, 2=Monday, ..., 7=Saturday (Expo format)
+}
+
+// Default high-risk times based on behavioral research
+export const DEFAULT_HIGH_RISK_TIMES: HighRiskTime[] = [
+  {
+    id: 'morning',
+    label: 'Morning check-in',
+    hour: 8,
+    minute: 0,
+    enabled: true,
+    daysOfWeek: [1, 2, 3, 4, 5, 6, 7], // Every day
+  },
+  {
+    id: 'lunch',
+    label: 'Lunch break',
+    hour: 12,
+    minute: 30,
+    enabled: true,
+    daysOfWeek: [2, 3, 4, 5, 6], // Mon-Fri
+  },
+  {
+    id: 'afternoon',
+    label: 'Afternoon slump',
+    hour: 15,
+    minute: 0,
+    enabled: true,
+    daysOfWeek: [2, 3, 4, 5, 6], // Mon-Fri
+  },
+  {
+    id: 'evening',
+    label: 'Evening wind-down',
+    hour: 21,
+    minute: 0,
+    enabled: true,
+    daysOfWeek: [1, 2, 3, 4, 5, 6, 7], // Every day
+  },
+];
+
+// Motivational messages for high-risk time notifications
+const HIGH_RISK_MESSAGES = [
+  { title: 'Mindful moment', body: 'Before you scroll, take a breath. What do you actually need right now?' },
+  { title: 'Quick check-in', body: 'This is usually a high-scroll time. How are you feeling?' },
+  { title: 'Pause point', body: 'Caught yourself reaching? Tap to explore alternatives.' },
+  { title: 'DopaMenu', body: 'Your future self will thank you. What would feel good right now?' },
+  { title: 'Gentle nudge', body: 'This is a vulnerable moment. Take 3 breaths before deciding.' },
+  { title: 'Awareness bell', body: 'Feeling the pull? You have other options.' },
+];
 
 // Configure notification behavior
 Notifications.setNotificationHandler({
@@ -92,6 +149,83 @@ export const notificationService = {
   },
 
   /**
+   * Schedule a high-risk time reminder notification
+   */
+  async scheduleHighRiskReminder(highRiskTime: HighRiskTime): Promise<string[]> {
+    const notificationIds: string[] = [];
+
+    // Get a random motivational message
+    const message = HIGH_RISK_MESSAGES[Math.floor(Math.random() * HIGH_RISK_MESSAGES.length)];
+
+    try {
+      // Schedule for each enabled day of the week
+      for (const weekday of highRiskTime.daysOfWeek) {
+        const notificationId = await Notifications.scheduleNotificationAsync({
+          content: {
+            title: message.title,
+            body: message.body,
+            data: {
+              type: 'high_risk_reminder',
+              highRiskTimeId: highRiskTime.id,
+            },
+          },
+          trigger: {
+            type: Notifications.SchedulableTriggerInputTypes.WEEKLY,
+            weekday,
+            hour: highRiskTime.hour,
+            minute: highRiskTime.minute,
+          },
+        });
+        notificationIds.push(notificationId);
+      }
+    } catch (error) {
+      console.error('Failed to schedule high-risk reminder:', error);
+    }
+
+    return notificationIds;
+  },
+
+  /**
+   * Schedule all high-risk time reminders
+   */
+  async scheduleAllHighRiskReminders(highRiskTimes: HighRiskTime[]): Promise<Map<string, string[]>> {
+    const scheduledIds = new Map<string, string[]>();
+
+    // Cancel existing high-risk reminders first
+    await this.cancelHighRiskReminders();
+
+    for (const hrt of highRiskTimes) {
+      if (hrt.enabled) {
+        const ids = await this.scheduleHighRiskReminder(hrt);
+        scheduledIds.set(hrt.id, ids);
+      }
+    }
+
+    console.log(`[Notifications] Scheduled ${scheduledIds.size} high-risk time reminder groups`);
+    return scheduledIds;
+  },
+
+  /**
+   * Cancel all high-risk reminder notifications
+   */
+  async cancelHighRiskReminders(): Promise<void> {
+    const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+
+    for (const notification of scheduled) {
+      if (notification.content.data?.type === 'high_risk_reminder') {
+        await Notifications.cancelScheduledNotificationAsync(notification.identifier);
+      }
+    }
+  },
+
+  /**
+   * Get all scheduled notifications
+   */
+  async getScheduledNotifications(): Promise<Notifications.NotificationRequest[]> {
+    return Notifications.getAllScheduledNotificationsAsync();
+  },
+
+  /**
    * Cancel a scheduled notification
    */
   async cancelNotification(notificationId: string): Promise<void> {
@@ -103,6 +237,30 @@ export const notificationService = {
    */
   async cancelAllNotifications(): Promise<void> {
     await Notifications.cancelAllScheduledNotificationsAsync();
+  },
+
+  /**
+   * Send an immediate check-in notification (iOS proactive trigger)
+   */
+  async sendImmediateCheckIn(): Promise<string | null> {
+    const message = HIGH_RISK_MESSAGES[Math.floor(Math.random() * HIGH_RISK_MESSAGES.length)];
+
+    try {
+      const notificationId = await Notifications.scheduleNotificationAsync({
+        content: {
+          title: message.title,
+          body: message.body,
+          data: {
+            type: 'immediate_checkin',
+          },
+        },
+        trigger: null, // Immediate
+      });
+      return notificationId;
+    } catch (error) {
+      console.error('Failed to send immediate check-in:', error);
+      return null;
+    }
   },
 
   /**
@@ -124,14 +282,31 @@ export const notificationService = {
   },
 
   /**
-   * Register for push notifications (for future use)
+   * Register for push notifications and set up Android channel
    */
   async registerForPushNotifications(): Promise<string | null> {
     if (Platform.OS === 'android') {
+      // Create notification channels for Android
       await Notifications.setNotificationChannelAsync('default', {
         name: 'DopaMenu',
         importance: Notifications.AndroidImportance.DEFAULT,
         vibrationPattern: [0, 250, 250, 250],
+        lightColor: '#9B7BB8',
+      });
+
+      await Notifications.setNotificationChannelAsync('high_risk', {
+        name: 'High-Risk Time Reminders',
+        description: 'Reminders at times you typically reach for your phone',
+        importance: Notifications.AndroidImportance.HIGH,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: '#9B7BB8',
+      });
+
+      await Notifications.setNotificationChannelAsync('app_detection', {
+        name: 'App Detection Alerts',
+        description: 'Alerts when you open tracked apps',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 500],
         lightColor: '#9B7BB8',
       });
     }
@@ -142,8 +317,6 @@ export const notificationService = {
       return null;
     }
 
-    // For local-only notifications, we don't need a push token
-    // This would be used if we add server-side notifications later
     return null;
   },
 };

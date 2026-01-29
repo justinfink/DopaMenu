@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   Switch,
   Alert,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -16,7 +17,7 @@ import { useUserStore } from '../../src/stores/userStore';
 import { useInterventionStore } from '../../src/stores/interventionStore';
 import { usePortfolioStore } from '../../src/stores/portfolioStore';
 import { DEFAULT_IDENTITY_ANCHORS } from '../../src/models';
-import { analyticsService, AnalyticsEvents } from '../../src/services';
+import { analyticsService, AnalyticsEvents, notificationService, appUsageService } from '../../src/services';
 import { colors, spacing, borderRadius, typography } from '../../src/constants/theme';
 
 // ============================================
@@ -84,6 +85,91 @@ export default function SettingsScreen() {
     } else {
       // Disable and clear when turned off
       await analyticsService.disable();
+    }
+  };
+
+  const handleHighRiskRemindersToggle = async () => {
+    const newValue = !user.preferences.highRiskRemindersEnabled;
+    updatePreferences({ highRiskRemindersEnabled: newValue });
+
+    if (newValue) {
+      // Schedule reminders when enabled
+      const enabledTimes = user.preferences.highRiskTimes.filter(t => t.enabled);
+      await notificationService.scheduleAllHighRiskReminders(enabledTimes);
+    } else {
+      // Cancel reminders when disabled
+      await notificationService.cancelHighRiskReminders();
+    }
+  };
+
+  const handleHighRiskTimeToggle = async (timeId: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const updatedTimes = user.preferences.highRiskTimes.map(t =>
+      t.id === timeId ? { ...t, enabled: !t.enabled } : t
+    );
+    updatePreferences({ highRiskTimes: updatedTimes });
+
+    // Reschedule if reminders are enabled
+    if (user.preferences.highRiskRemindersEnabled) {
+      const enabledTimes = updatedTimes.filter(t => t.enabled);
+      await notificationService.scheduleAllHighRiskReminders(enabledTimes);
+    }
+  };
+
+  const handleAppMonitoringToggle = async () => {
+    if (Platform.OS !== 'android') {
+      Alert.alert(
+        'Not Available',
+        'App detection is only available on Android. On iOS, use the scheduled reminders or the Urge Button instead.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
+    const newValue = !user.preferences.appMonitoringEnabled;
+
+    if (newValue) {
+      // Check permission first
+      const { granted } = await appUsageService.checkPermission();
+      if (!granted) {
+        Alert.alert(
+          'Permission Required',
+          'DopaMenu needs Usage Access permission to detect when you open certain apps. This lets us show you alternatives at the moment you need them most.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Grant Permission',
+              onPress: async () => {
+                await appUsageService.requestPermission();
+              },
+            },
+          ]
+        );
+        return;
+      }
+
+      // Start monitoring
+      const enabledApps = user.preferences.trackedApps.filter(a => a.enabled);
+      await appUsageService.startMonitoring(enabledApps);
+    } else {
+      // Stop monitoring
+      await appUsageService.stopMonitoring();
+    }
+
+    updatePreferences({ appMonitoringEnabled: newValue });
+  };
+
+  const handleTrackedAppToggle = async (packageName: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const updatedApps = user.preferences.trackedApps.map(a =>
+      a.packageName === packageName ? { ...a, enabled: !a.enabled } : a
+    );
+    updatePreferences({ trackedApps: updatedApps });
+
+    // Restart monitoring if enabled
+    if (user.preferences.appMonitoringEnabled) {
+      const enabledApps = updatedApps.filter(a => a.enabled);
+      await appUsageService.startMonitoring(enabledApps);
     }
   };
 
@@ -294,6 +380,138 @@ export default function SettingsScreen() {
             />
           </View>
         </Card>
+
+        {/* High-Risk Time Reminders */}
+        <SettingsSection
+          title="High-Risk Time Reminders"
+          icon="alarm"
+          expanded={expandedSection === 'highRisk'}
+          onToggle={() => toggleSection('highRisk')}
+        >
+          <Text style={styles.sectionDescription}>
+            Get gentle reminders at times you typically reach for your phone
+          </Text>
+          <Card style={[styles.toggleCard, { marginBottom: spacing.md }]}>
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleContent}>
+                <View style={styles.toggleText}>
+                  <Text style={styles.toggleTitle}>Enable Reminders</Text>
+                  <Text style={styles.toggleDescription}>
+                    Receive notifications at scheduled times
+                  </Text>
+                </View>
+              </View>
+              <Switch
+                value={user.preferences.highRiskRemindersEnabled}
+                onValueChange={handleHighRiskRemindersToggle}
+                trackColor={{ false: colors.border, true: colors.primaryLight }}
+                thumbColor={
+                  user.preferences.highRiskRemindersEnabled
+                    ? colors.primary
+                    : colors.textTertiary
+                }
+              />
+            </View>
+          </Card>
+          {user.preferences.highRiskRemindersEnabled && (
+            <View style={styles.timesList}>
+              {user.preferences.highRiskTimes.map((time) => (
+                <TouchableOpacity
+                  key={time.id}
+                  style={[
+                    styles.timeItem,
+                    time.enabled && styles.timeItemEnabled,
+                  ]}
+                  onPress={() => handleHighRiskTimeToggle(time.id)}
+                >
+                  <View style={styles.timeContent}>
+                    <Text style={styles.timeLabel}>{time.label}</Text>
+                    <Text style={styles.timeValue}>
+                      {time.hour.toString().padStart(2, '0')}:{time.minute.toString().padStart(2, '0')}
+                    </Text>
+                  </View>
+                  <Ionicons
+                    name={time.enabled ? 'checkmark-circle' : 'ellipse-outline'}
+                    size={24}
+                    color={time.enabled ? colors.primary : colors.textTertiary}
+                  />
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+        </SettingsSection>
+
+        {/* App Monitoring (Android Only) */}
+        {Platform.OS === 'android' && (
+          <SettingsSection
+            title="App Detection"
+            icon="eye"
+            expanded={expandedSection === 'appMonitoring'}
+            onToggle={() => toggleSection('appMonitoring')}
+          >
+            <Text style={styles.sectionDescription}>
+              Get an intervention when you open distracting apps
+            </Text>
+            <Card style={[styles.toggleCard, { marginBottom: spacing.md }]}>
+              <View style={styles.toggleRow}>
+                <View style={styles.toggleContent}>
+                  <View style={styles.toggleText}>
+                    <Text style={styles.toggleTitle}>Enable Detection</Text>
+                    <Text style={styles.toggleDescription}>
+                      Requires Usage Access permission
+                    </Text>
+                  </View>
+                </View>
+                <Switch
+                  value={user.preferences.appMonitoringEnabled}
+                  onValueChange={handleAppMonitoringToggle}
+                  trackColor={{ false: colors.border, true: colors.primaryLight }}
+                  thumbColor={
+                    user.preferences.appMonitoringEnabled
+                      ? colors.primary
+                      : colors.textTertiary
+                  }
+                />
+              </View>
+            </Card>
+            {user.preferences.appMonitoringEnabled && (
+              <View style={styles.appsList}>
+                {user.preferences.trackedApps.map((app) => (
+                  <TouchableOpacity
+                    key={app.packageName}
+                    style={[
+                      styles.appItem,
+                      app.enabled && styles.appItemEnabled,
+                    ]}
+                    onPress={() => handleTrackedAppToggle(app.packageName)}
+                  >
+                    <Text style={styles.appLabel}>{app.label}</Text>
+                    <Ionicons
+                      name={app.enabled ? 'checkmark-circle' : 'ellipse-outline'}
+                      size={24}
+                      color={app.enabled ? colors.primary : colors.textTertiary}
+                    />
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+          </SettingsSection>
+        )}
+
+        {/* iOS Alternative Explanation */}
+        {Platform.OS === 'ios' && (
+          <Card style={styles.infoCard}>
+            <View style={styles.infoContent}>
+              <Ionicons name="information-circle" size={20} color={colors.primary} />
+              <View style={styles.infoText}>
+                <Text style={styles.infoTitle}>About App Detection</Text>
+                <Text style={styles.infoDescription}>
+                  iOS doesn't allow detecting other app launches. Use scheduled reminders above or the Urge Button when you feel the pull.
+                </Text>
+              </View>
+            </View>
+          </Card>
+        )}
 
         {/* Quiet Hours Info */}
         <Card style={styles.infoCard}>
@@ -568,5 +786,57 @@ const styles = StyleSheet.create({
     fontSize: typography.sizes.sm,
     color: colors.textTertiary,
     textAlign: 'center',
+  },
+  timesList: {
+    gap: spacing.sm,
+  },
+  timeItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: spacing.md,
+    backgroundColor: colors.background,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  timeItemEnabled: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primaryFaded,
+  },
+  timeContent: {
+    flex: 1,
+  },
+  timeLabel: {
+    fontSize: typography.sizes.md,
+    fontWeight: typography.weights.medium,
+    color: colors.textPrimary,
+  },
+  timeValue: {
+    fontSize: typography.sizes.sm,
+    color: colors.textSecondary,
+    marginTop: 2,
+  },
+  appsList: {
+    gap: spacing.sm,
+  },
+  appItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: spacing.md,
+    backgroundColor: colors.background,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  appItemEnabled: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primaryFaded,
+  },
+  appLabel: {
+    fontSize: typography.sizes.md,
+    fontWeight: typography.weights.medium,
+    color: colors.textPrimary,
   },
 });

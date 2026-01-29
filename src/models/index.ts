@@ -25,6 +25,21 @@ export interface IdentityAnchor {
   icon?: string;
 }
 
+export interface HighRiskTimeConfig {
+  id: string;
+  label: string;
+  hour: number;
+  minute: number;
+  enabled: boolean;
+  daysOfWeek: number[]; // 1=Sunday, 2=Monday, ..., 7=Saturday
+}
+
+export interface TrackedAppConfig {
+  packageName: string;
+  label: string;
+  enabled: boolean;
+}
+
 export interface UserPreferences {
   interventionFrequency: 'low' | 'medium' | 'high';
   quietHours: TimeRange[];
@@ -32,6 +47,12 @@ export interface UserPreferences {
   tone: 'gentle' | 'direct' | 'minimal';
   weeklyRecalibrationEnabled: boolean;
   analyticsEnabled: boolean; // Opt-in for anonymous analytics
+  // High-risk time notifications (iOS & Android)
+  highRiskRemindersEnabled: boolean;
+  highRiskTimes: HighRiskTimeConfig[];
+  // App usage monitoring (Android only)
+  appMonitoringEnabled: boolean;
+  trackedApps: TrackedAppConfig[];
 }
 
 export interface TimeRange {

@@ -41,6 +41,23 @@ const defaultPreferences: UserPreferences = {
   tone: 'gentle',
   weeklyRecalibrationEnabled: true,
   analyticsEnabled: false, // Opt-out by default for privacy
+  // High-risk time notifications
+  highRiskRemindersEnabled: true,
+  highRiskTimes: [
+    { id: 'morning', label: 'Morning check-in', hour: 8, minute: 0, enabled: true, daysOfWeek: [1, 2, 3, 4, 5, 6, 7] },
+    { id: 'lunch', label: 'Lunch break', hour: 12, minute: 30, enabled: true, daysOfWeek: [2, 3, 4, 5, 6] },
+    { id: 'afternoon', label: 'Afternoon slump', hour: 15, minute: 0, enabled: true, daysOfWeek: [2, 3, 4, 5, 6] },
+    { id: 'evening', label: 'Evening wind-down', hour: 21, minute: 0, enabled: true, daysOfWeek: [1, 2, 3, 4, 5, 6, 7] },
+  ],
+  // App monitoring (Android only)
+  appMonitoringEnabled: false,
+  trackedApps: [
+    { packageName: 'com.instagram.android', label: 'Instagram', enabled: true },
+    { packageName: 'com.twitter.android', label: 'Twitter/X', enabled: true },
+    { packageName: 'com.zhiliaoapp.musically', label: 'TikTok', enabled: true },
+    { packageName: 'com.facebook.katana', label: 'Facebook', enabled: true },
+    { packageName: 'com.reddit.frontpage', label: 'Reddit', enabled: true },
+  ],
 };
 
 export const useUserStore = create<UserState>()(

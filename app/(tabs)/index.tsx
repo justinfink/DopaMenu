@@ -45,7 +45,7 @@ export default function DashboardScreen() {
     analyticsService.screen('Dashboard');
     analyticsService.track(AnalyticsEvents.APP_OPENED, {
       timeBucket,
-      hasCompletedOnboarding: user?.onboardingCompleted,
+      hasCompletedOnboarding: user?.onboardingCompleted ?? false,
     });
   }, []);
 

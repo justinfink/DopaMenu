@@ -2,6 +2,7 @@ import React from 'react';
 import {
   View,
   StyleSheet,
+  StyleProp,
   ViewStyle,
   TouchableOpacity,
 } from 'react-native';
@@ -16,7 +17,7 @@ interface CardProps {
   children: React.ReactNode;
   variant?: 'elevated' | 'outlined' | 'filled';
   onPress?: () => void;
-  style?: ViewStyle;
+  style?: StyleProp<ViewStyle>;
   padding?: 'none' | 'small' | 'medium' | 'large';
 }
 

@@ -1,6 +1,7 @@
 import PostHog from 'posthog-react-native';
 import * as Application from 'expo-application';
 import * as Device from 'expo-device';
+import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 
 // ============================================
@@ -8,10 +9,9 @@ import { Platform } from 'react-native';
 // Privacy-respecting product analytics
 // ============================================
 
-// PostHog API key - replace with your own from https://app.posthog.com
-// You can self-host PostHog for full data ownership
-const POSTHOG_API_KEY = 'phc_s2pTafDSGfRlVG2gblKqqA9dVxFcfJiPXKCB0dQksSe';
-const POSTHOG_HOST = 'https://app.posthog.com'; // or your self-hosted URL
+// PostHog credentials from environment variables (via app.config.js)
+const POSTHOG_API_KEY = Constants.expoConfig?.extra?.posthogApiKey || '';
+const POSTHOG_HOST = Constants.expoConfig?.extra?.posthogHost || 'https://app.posthog.com';
 
 let posthog: PostHog | null = null;
 let isInitialized = false;
@@ -30,7 +30,7 @@ export const analyticsService = {
       return;
     }
 
-    if (!POSTHOG_API_KEY || POSTHOG_API_KEY.startsWith('phc_REPLACE')) {
+    if (!POSTHOG_API_KEY) {
       console.log('[Analytics] No API key configured, skipping initialization');
       return;
     }
@@ -38,8 +38,6 @@ export const analyticsService = {
     try {
       posthog = new PostHog(POSTHOG_API_KEY, {
         host: POSTHOG_HOST,
-        // Don't capture IP addresses
-        captureMode: 'form',
         // Batch events to reduce network calls
         flushAt: 20,
         flushInterval: 30000,
@@ -75,7 +73,7 @@ export const analyticsService = {
   /**
    * Track an event
    */
-  track(event: string, properties?: Record<string, unknown>): void {
+  track(event: string, properties?: Record<string, string | number | boolean>): void {
     if (!posthog) return;
 
     try {
@@ -88,7 +86,7 @@ export const analyticsService = {
   /**
    * Track screen view
    */
-  screen(screenName: string, properties?: Record<string, unknown>): void {
+  screen(screenName: string, properties?: Record<string, string | number | boolean>): void {
     if (!posthog) return;
 
     try {
