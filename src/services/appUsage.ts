@@ -90,7 +90,8 @@ export const appUsageService = {
   },
 
   /**
-   * Open settings to grant usage stats permission (Android only)
+   * Open Usage Access settings directly to grant permission (Android only)
+   * This takes the user directly to the correct settings page
    */
   async requestPermission(): Promise<void> {
     if (!this.isSupported()) {
@@ -99,12 +100,17 @@ export const appUsageService = {
     }
 
     try {
-      // Open Android Usage Access settings
-      if (Platform.OS === 'android') {
+      if (NativeAppUsage) {
+        // Use native module to open Usage Access settings directly
+        await NativeAppUsage.requestPermission();
+      } else {
+        // Fallback to general settings if native module not available
         await Linking.openSettings();
       }
     } catch (error) {
       console.error('[AppUsage] Failed to open settings:', error);
+      // Fallback to general settings
+      await Linking.openSettings();
     }
   },
 
