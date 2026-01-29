@@ -16,6 +16,7 @@ import { useUserStore } from '../../src/stores/userStore';
 import { useInterventionStore } from '../../src/stores/interventionStore';
 import { usePortfolioStore } from '../../src/stores/portfolioStore';
 import { DEFAULT_IDENTITY_ANCHORS } from '../../src/models';
+import { analyticsService, AnalyticsEvents } from '../../src/services';
 import { colors, spacing, borderRadius, typography } from '../../src/constants/theme';
 
 // ============================================
@@ -66,6 +67,24 @@ export default function SettingsScreen() {
     updatePreferences({
       weeklyRecalibrationEnabled: !user.preferences.weeklyRecalibrationEnabled,
     });
+  };
+
+  const handleAnalyticsToggle = async () => {
+    const newValue = !user.preferences.analyticsEnabled;
+    updatePreferences({ analyticsEnabled: newValue });
+
+    if (newValue) {
+      // Initialize analytics when enabled
+      await analyticsService.initialize({ enableAnalytics: true });
+      analyticsService.identify(user.id);
+      analyticsService.track(AnalyticsEvents.SETTINGS_CHANGED, {
+        setting: 'analytics',
+        value: true
+      });
+    } else {
+      // Disable and clear when turned off
+      await analyticsService.disable();
+    }
   };
 
   const handleIdentityToggle = (label: string) => {
@@ -242,6 +261,33 @@ export default function SettingsScreen() {
               trackColor={{ false: colors.border, true: colors.primaryLight }}
               thumbColor={
                 user.preferences.weeklyRecalibrationEnabled
+                  ? colors.primary
+                  : colors.textTertiary
+              }
+            />
+          </View>
+        </Card>
+
+        {/* Analytics */}
+        <Card style={styles.toggleCard}>
+          <View style={styles.toggleRow}>
+            <View style={styles.toggleContent}>
+              <View style={styles.toggleIcon}>
+                <Ionicons name="analytics" size={20} color={colors.primary} />
+              </View>
+              <View style={styles.toggleText}>
+                <Text style={styles.toggleTitle}>Help Improve DopaMenu</Text>
+                <Text style={styles.toggleDescription}>
+                  Share anonymous usage data to help us make the app better
+                </Text>
+              </View>
+            </View>
+            <Switch
+              value={user.preferences.analyticsEnabled}
+              onValueChange={handleAnalyticsToggle}
+              trackColor={{ false: colors.border, true: colors.primaryLight }}
+              thumbColor={
+                user.preferences.analyticsEnabled
                   ? colors.primary
                   : colors.textTertiary
               }

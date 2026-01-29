@@ -14,7 +14,10 @@
       "Bash(npx tsc:*)",
       "Bash(cmd /c \"ipconfig | findstr IPv4\")",
       "Bash(npx qrcode-terminal:*)",
-      "Bash(taskkill:*)"
+      "Bash(taskkill:*)",
+      "WebFetch(domain:job-logs.eascdn.net)",
+      "Bash(git push:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd analytics service, urge button, and privacy controls\n\n- PostHog integration for privacy-respecting product analytics\n- Opt-in analytics toggle in settings \\(disabled by default\\)\n- UrgeButton component for manual intervention triggers\n- Track key events: onboarding, interventions, portfolio\n- Analytics enabled preference persisted with user data\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   }
 }

@@ -40,6 +40,7 @@ const defaultPreferences: UserPreferences = {
   excludedApps: [],
   tone: 'gentle',
   weeklyRecalibrationEnabled: true,
+  analyticsEnabled: false, // Opt-out by default for privacy
 };
 
 export const useUserStore = create<UserState>()(

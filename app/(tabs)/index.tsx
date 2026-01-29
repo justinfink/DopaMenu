@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -10,12 +10,13 @@ import {
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { Card, Button, InterventionCard, ProgressRing } from '../../src/components';
+import { Card, Button, ProgressRing, UrgeButton } from '../../src/components';
 import { useUserStore } from '../../src/stores/userStore';
 import { useInterventionStore } from '../../src/stores/interventionStore';
 import { usePortfolioStore } from '../../src/stores/portfolioStore';
 import { simulateSituation, generateIntervention } from '../../src/engine/InterventionEngine';
 import { getGreeting, getTimeBucket } from '../../src/utils/helpers';
+import { analyticsService, AnalyticsEvents } from '../../src/services';
 import { colors, spacing, borderRadius, typography, shadows } from '../../src/constants/theme';
 
 // ============================================
@@ -39,13 +40,40 @@ export default function DashboardScreen() {
   const timeBucket = getTimeBucket();
   const greeting = getGreeting();
 
+  // Track screen view
+  useEffect(() => {
+    analyticsService.screen('Dashboard');
+    analyticsService.track(AnalyticsEvents.APP_OPENED, {
+      timeBucket,
+      hasCompletedOnboarding: user?.onboardingCompleted,
+    });
+  }, []);
+
   const handleRefresh = () => {
     setRefreshing(true);
     setTimeout(() => setRefreshing(false), 1000);
   };
 
+  const handleUrgePress = () => {
+    if (!user) return;
+
+    // Track the urge event
+    analyticsService.track(AnalyticsEvents.INTERVENTION_SHOWN, {
+      trigger: 'urge_button',
+      timeBucket,
+    });
+
+    const situation = simulateSituation();
+    const decision = generateIntervention(situation, user);
+
+    showIntervention(decision, situation);
+    router.push('/intervention');
+  };
+
   const handleTriggerDemo = () => {
     if (!user) return;
+
+    analyticsService.track(AnalyticsEvents.DEMO_TRIGGERED, { timeBucket });
 
     const situation = simulateSituation();
     const decision = generateIntervention(situation, user);
@@ -104,6 +132,14 @@ export default function DashboardScreen() {
             </View>
           </TouchableOpacity>
         </View>
+
+        {/* Main Urge Button */}
+        <Card style={styles.urgeCard}>
+          <UrgeButton
+            onPress={handleUrgePress}
+            label="Feeling the urge?"
+          />
+        </Card>
 
         {/* Current State Card */}
         <Card style={styles.stateCard}>
@@ -253,6 +289,11 @@ const styles = StyleSheet.create({
     fontSize: typography.sizes.lg,
     fontWeight: typography.weights.bold,
     color: colors.textInverse,
+  },
+  urgeCard: {
+    marginBottom: spacing.lg,
+    paddingVertical: spacing.xl,
+    alignItems: 'center',
   },
   stateCard: {
     marginBottom: spacing.md,

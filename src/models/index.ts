@@ -31,6 +31,7 @@ export interface UserPreferences {
   excludedApps: string[];
   tone: 'gentle' | 'direct' | 'minimal';
   weeklyRecalibrationEnabled: boolean;
+  analyticsEnabled: boolean; // Opt-in for anonymous analytics
 }
 
 export interface TimeRange {
