@@ -10,7 +10,7 @@ import { Platform } from 'react-native';
 
 // PostHog API key - replace with your own from https://app.posthog.com
 // You can self-host PostHog for full data ownership
-const POSTHOG_API_KEY = 'phc_REPLACE_WITH_YOUR_KEY';
+const POSTHOG_API_KEY = 'phc_s2pTafDSGfRlVG2gblKqqA9dVxFcfJiPXKCB0dQksSe';
 const POSTHOG_HOST = 'https://app.posthog.com'; // or your self-hosted URL
 
 let posthog: PostHog | null = null;
@@ -30,7 +30,7 @@ export const analyticsService = {
       return;
     }
 
-    if (POSTHOG_API_KEY === 'phc_REPLACE_WITH_YOUR_KEY') {
+    if (!POSTHOG_API_KEY || POSTHOG_API_KEY.startsWith('phc_REPLACE')) {
       console.log('[Analytics] No API key configured, skipping initialization');
       return;
     }
