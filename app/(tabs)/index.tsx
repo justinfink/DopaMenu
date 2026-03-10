@@ -22,7 +22,6 @@ import { useRedirectStore } from '../../src/stores/redirectStore';
 import { simulateSituation, generateIntervention } from '../../src/engine/InterventionEngine';
 import { getGreeting, getTimeBucket } from '../../src/utils/helpers';
 import { analyticsService, AnalyticsEvents, appUsageService } from '../../src/services';
-import { permissionsService } from '../../src/services/permissions';
 import { colors, spacing, borderRadius, typography, shadows } from '../../src/constants/theme';
 
 // ============================================
@@ -32,7 +31,6 @@ import { colors, spacing, borderRadius, typography, shadows } from '../../src/co
 
 interface PermissionState {
   usageAccess: boolean;
-  overlay: boolean;
   checked: boolean;
 }
 
@@ -49,7 +47,7 @@ export default function DashboardScreen() {
   const { getWellbeingScore, todaySnapshot, refreshTodaySnapshot } = usePhenotypeStore();
   const { getStats: getRedirectStats } = useRedirectStore();
   const [refreshing, setRefreshing] = useState(false);
-  const [permissions, setPermissions] = useState<PermissionState>({ usageAccess: false, overlay: false, checked: false });
+  const [permissions, setPermissions] = useState<PermissionState>({ usageAccess: false, checked: false });
   const [todayUsage, setTodayUsage] = useState<AppUsageStat[]>([]);
 
   const portfolio = getTodayPortfolio();
@@ -69,7 +67,7 @@ export default function DashboardScreen() {
     if (Platform.OS !== 'android') return;
 
     const status = await appUsageService.checkPermissionsStatus();
-    setPermissions({ ...status, checked: true });
+    setPermissions({ usageAccess: status.usageAccess, checked: true });
 
     // Load today's app usage if we have permission
     if (status.usageAccess) {
@@ -199,12 +197,11 @@ export default function DashboardScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Setup Banner - shown when core features need permissions */}
+        {/* Setup Banner - shown when core features need enabling */}
         {Platform.OS === 'android' && permissions.checked && (
           !user?.preferences.appMonitoringEnabled ||
           !user?.preferences.redirectionEnabled ||
-          !permissions.usageAccess ||
-          !permissions.overlay
+          !permissions.usageAccess
         ) && (
           <Card style={styles.setupCard}>
             <View style={styles.setupHeader}>
@@ -212,96 +209,54 @@ export default function DashboardScreen() {
               <Text style={styles.setupTitle}>Complete Setup</Text>
             </View>
             <Text style={styles.setupDescription}>
-              Enable these features for DopaMenu to catch you before you scroll
+              Enable app detection so DopaMenu can catch you before you scroll
             </Text>
             <View style={styles.setupItems}>
-              {/* Usage Access */}
-              <TouchableOpacity
-                style={[styles.setupItem, permissions.usageAccess && styles.setupItemDone]}
-                onPress={async () => {
-                  if (!permissions.usageAccess) {
-                    await appUsageService.requestPermission();
-                  } else if (!user?.preferences.appMonitoringEnabled) {
-                    updatePreferences({ appMonitoringEnabled: true });
-                    const enabledApps = user?.preferences.trackedApps.filter(a => a.enabled) || [];
-                    await appUsageService.startMonitoring(enabledApps);
-                  }
-                }}
-              >
-                <Ionicons
-                  name={permissions.usageAccess ? 'checkmark-circle' : 'ellipse-outline'}
-                  size={20}
-                  color={permissions.usageAccess ? colors.success : colors.textTertiary}
-                />
-                <View style={styles.setupItemText}>
-                  <Text style={styles.setupItemTitle}>
-                    {permissions.usageAccess ? 'Usage Access Granted' : 'Grant Usage Access'}
-                  </Text>
-                  <Text style={styles.setupItemDesc}>Detect when you open apps</Text>
-                </View>
-                {!permissions.usageAccess && (
-                  <Ionicons name="open-outline" size={16} color={colors.primary} />
-                )}
-              </TouchableOpacity>
-
-              {/* Overlay Permission */}
-              <TouchableOpacity
-                style={[styles.setupItem, permissions.overlay && styles.setupItemDone]}
-                onPress={async () => {
-                  if (!permissions.overlay) {
-                    await permissionsService.openOverlaySettings();
-                  } else if (!user?.preferences.redirectionEnabled) {
-                    updatePreferences({ redirectionEnabled: true });
-                  }
-                }}
-              >
-                <Ionicons
-                  name={permissions.overlay ? 'checkmark-circle' : 'ellipse-outline'}
-                  size={20}
-                  color={permissions.overlay ? colors.success : colors.textTertiary}
-                />
-                <View style={styles.setupItemText}>
-                  <Text style={styles.setupItemTitle}>
-                    {permissions.overlay ? 'Overlay Permission Granted' : 'Display Over Apps'}
-                  </Text>
-                  <Text style={styles.setupItemDesc}>Show redirect when you open a timewaster</Text>
-                </View>
-                {!permissions.overlay && (
-                  <Ionicons name="open-outline" size={16} color={colors.primary} />
-                )}
-              </TouchableOpacity>
-
-              {/* App Monitoring Toggle */}
-              {permissions.usageAccess && !user?.preferences.appMonitoringEnabled && (
+              {/* Step 1: Usage Access Permission */}
+              {!permissions.usageAccess && (
                 <TouchableOpacity
                   style={styles.setupItem}
                   onPress={async () => {
-                    updatePreferences({ appMonitoringEnabled: true });
-                    const enabledApps = user?.preferences.trackedApps.filter(a => a.enabled) || [];
-                    await appUsageService.startMonitoring(enabledApps);
+                    await appUsageService.requestPermission();
                   }}
                 >
-                  <Ionicons name="ellipse-outline" size={20} color={colors.textTertiary} />
-                  <View style={styles.setupItemText}>
-                    <Text style={styles.setupItemTitle}>Enable App Detection</Text>
-                    <Text style={styles.setupItemDesc}>Start monitoring tracked apps</Text>
+                  <View style={[styles.setupStepBadge, { backgroundColor: colors.primary }]}>
+                    <Text style={styles.setupStepNumber}>1</Text>
                   </View>
-                  <Ionicons name="toggle-outline" size={20} color={colors.primary} />
+                  <View style={styles.setupItemText}>
+                    <Text style={styles.setupItemTitle}>Grant Usage Access</Text>
+                    <Text style={styles.setupItemDesc}>
+                      Opens Android settings - find DopaMenu and enable access, then come back
+                    </Text>
+                  </View>
+                  <Ionicons name="open-outline" size={16} color={colors.primary} />
                 </TouchableOpacity>
               )}
 
-              {/* Redirection Toggle */}
-              {permissions.overlay && !user?.preferences.redirectionEnabled && (
+              {/* Step 2: Enable features (shown after permission granted) */}
+              {permissions.usageAccess && (!user?.preferences.appMonitoringEnabled || !user?.preferences.redirectionEnabled) && (
                 <TouchableOpacity
                   style={styles.setupItem}
-                  onPress={() => updatePreferences({ redirectionEnabled: true })}
+                  onPress={async () => {
+                    updatePreferences({
+                      appMonitoringEnabled: true,
+                      redirectionEnabled: true,
+                    });
+                    const enabledApps = user?.preferences.trackedApps.filter(a => a.enabled) || [];
+                    await appUsageService.startMonitoring(enabledApps);
+                    checkSetupStatus();
+                  }}
                 >
-                  <Ionicons name="ellipse-outline" size={20} color={colors.textTertiary} />
-                  <View style={styles.setupItemText}>
-                    <Text style={styles.setupItemTitle}>Enable Redirection</Text>
-                    <Text style={styles.setupItemDesc}>Intercept timewaster app launches</Text>
+                  <View style={[styles.setupStepBadge, { backgroundColor: colors.success }]}>
+                    <Ionicons name="checkmark" size={14} color={colors.textInverse} />
                   </View>
-                  <Ionicons name="toggle-outline" size={20} color={colors.primary} />
+                  <View style={styles.setupItemText}>
+                    <Text style={styles.setupItemTitle}>Activate App Detection</Text>
+                    <Text style={styles.setupItemDesc}>
+                      Permission granted! Tap to start monitoring and enable redirects
+                    </Text>
+                  </View>
+                  <Ionicons name="power" size={20} color={colors.success} />
                 </TouchableOpacity>
               )}
             </View>
@@ -747,9 +702,17 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
-  setupItemDone: {
-    borderColor: colors.success,
-    backgroundColor: '#F0F9F4',
+  setupStepBadge: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  setupStepNumber: {
+    fontSize: typography.sizes.xs,
+    fontWeight: typography.weights.bold,
+    color: colors.textInverse,
   },
   setupItemText: {
     flex: 1,

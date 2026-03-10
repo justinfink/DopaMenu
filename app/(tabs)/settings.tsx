@@ -178,7 +178,11 @@ export default function SettingsScreen() {
       await appUsageService.stopMonitoring();
     }
 
-    updatePreferences({ appMonitoringEnabled: newValue });
+    // Auto-enable redirection when monitoring is turned on
+    updatePreferences({
+      appMonitoringEnabled: newValue,
+      ...(newValue ? { redirectionEnabled: true } : {}),
+    });
   };
 
   const handleTrackedAppToggle = async (packageName: string) => {
@@ -202,20 +206,7 @@ export default function SettingsScreen() {
   };
 
   const handleRedirectionToggle = async () => {
-    if (!user.preferences.redirectionEnabled && Platform.OS === 'android') {
-      // Check overlay permission using live status
-      if (!permStatus.overlay) {
-        Alert.alert(
-          'Permission Required',
-          'DopaMenu needs "Display over other apps" permission to show the redirect screen. You\'ll be taken to settings - grant permission and come back.',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Open Settings', onPress: () => permissionsService.openOverlaySettings() },
-          ]
-        );
-        return;
-      }
-    }
+    // No overlay permission needed - we bring our own activity to foreground, not a system overlay
     updatePreferences({ redirectionEnabled: !user.preferences.redirectionEnabled });
   };
 
@@ -599,7 +590,7 @@ export default function SettingsScreen() {
           onToggle={() => toggleSection('redirection')}
         >
           <Text style={styles.sectionDescription}>
-            Intercept timewasting app launches with a full-screen overlay
+            When you open a tracked timewaster app, DopaMenu will jump in with alternatives
           </Text>
           <Card style={[styles.toggleCard, { marginBottom: spacing.sm }]}>
             <View style={styles.toggleRow}>
@@ -607,7 +598,7 @@ export default function SettingsScreen() {
                 <View style={styles.toggleText}>
                   <Text style={styles.toggleTitle}>Enable Redirection</Text>
                   <Text style={styles.toggleDescription}>
-                    {Platform.OS === 'android' ? 'Requires overlay permission' : 'Configure in Apps tab'}
+                    Show alternatives when you open a timewaster
                   </Text>
                 </View>
               </View>
@@ -656,7 +647,7 @@ export default function SettingsScreen() {
             onToggle={() => toggleSection('permissions')}
           >
             <Text style={styles.sectionDescription}>
-              Manage permissions DopaMenu needs to function. Tap to open settings, then return here.
+              DopaMenu needs one Android permission to work. Tap to open settings, then return here - it updates automatically.
             </Text>
             <View style={styles.optionsList}>
               <TouchableOpacity
@@ -673,22 +664,6 @@ export default function SettingsScreen() {
                   name={permStatus.usageAccess ? 'checkmark-circle' : 'open-outline'}
                   size={20}
                   color={permStatus.usageAccess ? colors.success : colors.primary}
-                />
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.optionItem, permStatus.overlay && styles.optionItemGranted]}
-                onPress={() => permissionsService.openOverlaySettings()}
-              >
-                <View style={styles.optionContent}>
-                  <Text style={styles.optionLabel}>Display Over Apps</Text>
-                  <Text style={styles.optionDescription}>
-                    {permStatus.overlay ? 'Granted - redirect overlay active' : 'Required to show redirect screen'}
-                  </Text>
-                </View>
-                <Ionicons
-                  name={permStatus.overlay ? 'checkmark-circle' : 'open-outline'}
-                  size={20}
-                  color={permStatus.overlay ? colors.success : colors.primary}
                 />
               </TouchableOpacity>
               <TouchableOpacity style={styles.optionItem} onPress={() => permissionsService.openBatteryOptimizationSettings()}>

@@ -46,7 +46,7 @@ export default function RootLayout() {
   // Check for pending redirects from the background service
   const checkPendingRedirect = useCallback(async () => {
     if (Platform.OS !== 'android' || !user) return;
-    if (!user.preferences.appMonitoringEnabled || !user.preferences.redirectionEnabled) return;
+    if (!user.preferences.appMonitoringEnabled) return;
 
     const pending = await appUsageService.getPendingRedirect();
     if (!pending) return;
@@ -134,8 +134,6 @@ export default function RootLayout() {
     let unsubscribeAppLaunch: (() => void) | null = null;
     if (Platform.OS === 'android' && currentUser.preferences.appMonitoringEnabled) {
       unsubscribeAppLaunch = appUsageService.onAppLaunched((event) => {
-        if (!currentUser.preferences.redirectionEnabled) return;
-
         const { isInCooldown } = useRedirectStore.getState();
         if (isInCooldown()) return;
 
