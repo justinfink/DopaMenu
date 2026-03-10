@@ -39,6 +39,28 @@ function withAppUsageManifest(config) {
       });
     }
 
+    // Add SYSTEM_ALERT_WINDOW permission (for overlay/redirection)
+    const hasOverlayPerm = manifest['uses-permission'].some(
+      (perm) => perm.$['android:name'] === 'android.permission.SYSTEM_ALERT_WINDOW'
+    );
+
+    if (!hasOverlayPerm) {
+      manifest['uses-permission'].push({
+        $: { 'android:name': 'android.permission.SYSTEM_ALERT_WINDOW' },
+      });
+    }
+
+    // Add QUERY_ALL_PACKAGES permission (for listing installed apps)
+    const hasQueryPerm = manifest['uses-permission'].some(
+      (perm) => perm.$['android:name'] === 'android.permission.QUERY_ALL_PACKAGES'
+    );
+
+    if (!hasQueryPerm) {
+      manifest['uses-permission'].push({
+        $: { 'android:name': 'android.permission.QUERY_ALL_PACKAGES' },
+      });
+    }
+
     // Add foreground service type permission (Android 14+)
     const hasForegroundTypePerm = manifest['uses-permission'].some(
       (perm) => perm.$['android:name'] === 'android.permission.FOREGROUND_SERVICE_SPECIAL_USE'
@@ -136,11 +158,20 @@ import android.app.usage.UsageStats
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
+import android.net.Uri
 import android.os.Build
 import android.os.Process
 import android.provider.Settings
+import android.util.Base64
 import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import java.io.ByteArrayOutputStream
 
 class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
@@ -253,6 +284,134 @@ class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
             )
         }
         return mode == AppOpsManager.MODE_ALLOWED
+    }
+
+    @ReactMethod
+    fun hasUsagePermission(promise: Promise) {
+        promise.resolve(hasUsageStatsPermission())
+    }
+
+    @ReactMethod
+    fun getInstalledApps(promise: Promise) {
+        try {
+            val pm = reactApplicationContext.packageManager
+            val apps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
+            val result = Arguments.createArray()
+
+            for (app in apps) {
+                // Skip system apps without a launcher icon
+                val launchIntent = pm.getLaunchIntentForPackage(app.packageName)
+                if (launchIntent == null && (app.flags and ApplicationInfo.FLAG_SYSTEM) != 0) {
+                    continue
+                }
+
+                val appInfo = Arguments.createMap()
+                appInfo.putString("packageName", app.packageName)
+                appInfo.putString("name", pm.getApplicationLabel(app).toString())
+
+                // Get category if available (API 26+)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    appInfo.putInt("category", app.category)
+                }
+
+                result.pushMap(appInfo)
+            }
+
+            promise.resolve(result)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
+
+    @ReactMethod
+    fun canDrawOverlays(promise: Promise) {
+        try {
+            val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Settings.canDrawOverlays(reactApplicationContext)
+            } else {
+                true
+            }
+            promise.resolve(result)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
+
+    @ReactMethod
+    fun requestOverlayPermission(promise: Promise) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val intent = Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:" + reactApplicationContext.packageName)
+                )
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                reactApplicationContext.startActivity(intent)
+            }
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
+
+    @ReactMethod
+    fun bringToForeground(promise: Promise) {
+        try {
+            val intent = reactApplicationContext.packageManager
+                .getLaunchIntentForPackage(reactApplicationContext.packageName)
+            intent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+            reactApplicationContext.startActivity(intent)
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
+
+    @ReactMethod
+    fun openUsageAccessSettings(promise: Promise) {
+        try {
+            val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            reactApplicationContext.startActivity(intent)
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
+
+    @ReactMethod
+    fun getAppUsageStats(days: Int, promise: Promise) {
+        try {
+            if (!hasUsageStatsPermission()) {
+                promise.resolve(Arguments.createArray())
+                return
+            }
+
+            val usageStatsManager = reactApplicationContext.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+            val endTime = System.currentTimeMillis()
+            val startTime = endTime - (days.toLong() * 24 * 60 * 60 * 1000)
+
+            val stats = usageStatsManager.queryUsageStats(
+                UsageStatsManager.INTERVAL_DAILY,
+                startTime,
+                endTime
+            )
+
+            val result = Arguments.createArray()
+            stats?.filter { it.totalTimeInForeground > 0 }
+                ?.sortedByDescending { it.totalTimeInForeground }
+                ?.forEach { stat ->
+                    val item = Arguments.createMap()
+                    item.putString("packageName", stat.packageName)
+                    item.putDouble("totalTimeMs", stat.totalTimeInForeground.toDouble())
+                    item.putDouble("lastUsed", stat.lastTimeUsed.toDouble())
+                    result.pushMap(item)
+                }
+
+            promise.resolve(result)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
     }
 
     fun emitAppLaunched(packageName: String, label: String) {
@@ -427,8 +586,24 @@ class AppUsageMonitorService : Service() {
     }
 
     private fun onTrackedAppLaunched(packageName: String) {
-        // Send a notification to interrupt the user
+        // Bring DopaMenu to foreground for full-screen redirect overlay
+        val launchIntent = packageManager.getLaunchIntentForPackage(this.packageName)
+        launchIntent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+        launchIntent?.putExtra("redirect_source_app", packageName)
+        launchIntent?.putExtra("redirect_triggered", true)
+
+        try {
+            startActivity(launchIntent)
+        } catch (e: Exception) {
+            // Fallback: show notification if can't bring to foreground
+            showRedirectNotification(packageName)
+        }
+    }
+
+    private fun showRedirectNotification(packageName: String) {
         val intent = packageManager.getLaunchIntentForPackage(this.packageName)
+        intent?.putExtra("redirect_source_app", packageName)
+        intent?.putExtra("redirect_triggered", true)
         val pendingIntent = PendingIntent.getActivity(
             this, 0, intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
@@ -440,6 +615,17 @@ class AppUsageMonitorService : Service() {
             "Pause. What would feel good instead?",
             "Mindful moment: you have other options.",
         )
+
+        // Create notification channel for app detection if needed
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                "app_detection",
+                "App Detection",
+                NotificationManager.IMPORTANCE_HIGH
+            )
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.createNotificationChannel(channel)
+        }
 
         val notification = NotificationCompat.Builder(this, "app_detection")
             .setContentTitle("DopaMenu")

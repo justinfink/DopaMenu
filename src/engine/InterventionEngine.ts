@@ -11,6 +11,8 @@ import {
   InterventionDecision,
   TimeBucket,
   User,
+  PhenotypeSnapshot,
+  PhenotypeProfile,
 } from '../models';
 import { DEFAULT_INTERVENTIONS, SOCIAL_MEDIA_MODALITY } from '../constants/interventions';
 
@@ -62,6 +64,36 @@ const SITUATION_ITCH_MAP: Record<SituationType, Partial<Record<ItchType, number>
     DEPLETION: 0.5,
     BOREDOM: 0.4,
   },
+  TIMEWASTER_APP_OPENED: {
+    BOREDOM: 0.5,
+    AVOIDANCE: 0.4,
+    REWARD_SEEKING: 0.7,
+    RESTLESSNESS: 0.3,
+  },
+  EXCESSIVE_SCREEN_TIME: {
+    AVOIDANCE: 0.6,
+    DEPLETION: 0.5,
+    BOREDOM: 0.3,
+  },
+  SLEEP_DEFICIT: {
+    DEPLETION: 0.8,
+    ANXIETY: 0.3,
+  },
+  HIGH_COGNITIVE_LOAD: {
+    DEPLETION: 0.7,
+    AVOIDANCE: 0.5,
+    ANXIETY: 0.4,
+  },
+  SEDENTARY_ALERT: {
+    BOREDOM: 0.4,
+    RESTLESSNESS: 0.6,
+    DEPLETION: 0.3,
+  },
+  MOOD_DIP: {
+    LONELINESS: 0.5,
+    ANXIETY: 0.6,
+    DEPLETION: 0.4,
+  },
 };
 
 export function inferItches(situation: Situation): ItchInference {
@@ -94,7 +126,15 @@ const TIME_EFFORT_MAP: Record<TimeBucket, EffortLevel> = {
   late_night: 'very_low',
 };
 
-export function estimateEffortBudget(situation: Situation): EffortBudget {
+export interface PhenotypeContext {
+  snapshot?: PhenotypeSnapshot | null;
+  profile?: PhenotypeProfile | null;
+}
+
+export function estimateEffortBudget(
+  situation: Situation,
+  phenotype?: PhenotypeContext
+): EffortBudget {
   const timeOfDay = situation.context.timeOfDay || 'afternoon';
   const cognitiveLoad = situation.context.recentCognitiveLoad || 'medium';
 
@@ -110,6 +150,36 @@ export function estimateEffortBudget(situation: Situation): EffortBudget {
   // Adjust based on situation type
   if (situation.type === 'POST_MEETING_TRANSITION') {
     baseEffort = downgradeEffort(baseEffort);
+  }
+
+  // ── Phenotype-aware adjustments ──
+  if (phenotype?.snapshot) {
+    const snap = phenotype.snapshot;
+
+    // Poor sleep → lower effort ceiling
+    if (snap.sleepInference.qualityScore > 0 && snap.sleepInference.qualityScore < 40) {
+      baseEffort = downgradeEffort(baseEffort);
+    }
+
+    // Low mood → lower effort
+    if (snap.moodProxy.score < 35) {
+      baseEffort = downgradeEffort(baseEffort);
+    }
+
+    // High activity → can handle more effort
+    if (snap.activityLevel.stepCount > 8000) {
+      baseEffort = upgradeEffort(baseEffort);
+    }
+
+    // High cognitive load from calendar → lower effort
+    if (snap.cognitiveLoad.calendarEventCount > 5) {
+      baseEffort = downgradeEffort(baseEffort);
+    }
+  }
+
+  // Sleep deficit situation always downgrades
+  if (situation.type === 'SLEEP_DEFICIT') {
+    baseEffort = downgradeEffort(downgradeEffort(baseEffort));
   }
 
   return {
@@ -278,23 +348,50 @@ const EXPLANATIONS: Record<SituationType, string[]> = {
     'Taking a break.',
     'Brief pause from work.',
   ],
+  TIMEWASTER_APP_OPENED: [
+    'You reached for a familiar escape.',
+    'Autopilot kicked in. Let\'s redirect.',
+    'Caught in the act! Here\'s a better option.',
+  ],
+  EXCESSIVE_SCREEN_TIME: [
+    'Your screen time is higher than usual today.',
+    'You\'ve been on your phone a lot. Time to step away?',
+  ],
+  SLEEP_DEFICIT: [
+    'You didn\'t sleep well. Be gentle with yourself.',
+    'Low sleep last night. Keep it easy today.',
+  ],
+  HIGH_COGNITIVE_LOAD: [
+    'Busy day. Your mind needs a real break.',
+    'Calendar was packed. Give yourself a reset.',
+  ],
+  SEDENTARY_ALERT: [
+    'You\'ve been still for a while. Move a little?',
+    'Time to stretch. Your body will thank you.',
+  ],
+  MOOD_DIP: [
+    'Sensing a dip. Something small might help.',
+    'Low energy moment. Try something nurturing.',
+  ],
 };
 
 export function generateIntervention(
   situation: Situation,
   user: User,
-  candidates: InterventionCandidate[] = DEFAULT_INTERVENTIONS
+  candidates: InterventionCandidate[] = DEFAULT_INTERVENTIONS,
+  phenotype?: PhenotypeContext,
+  sourceAppName?: string,
 ): InterventionDecision {
   // 1. Infer itches
   const itchInference = inferItches(situation);
 
-  // 2. Estimate effort budget
-  const effortBudget = estimateEffortBudget(situation);
+  // 2. Estimate effort budget (phenotype-aware)
+  const effortBudget = estimateEffortBudget(situation, phenotype);
 
   // 3. Filter candidates
   const filtered = filterCandidates(candidates, effortBudget, situation, user);
 
-  // 4. Rank candidates
+  // 4. Rank candidates (with phenotype context)
   const ranked = rankCandidates(filtered, SOCIAL_MEDIA_MODALITY, user, itchInference);
 
   // 5. Select primary and alternatives
@@ -302,7 +399,17 @@ export function generateIntervention(
   const alternatives = ranked.slice(1, 4); // Up to 3 alternatives
 
   // 6. Generate explanation
-  const explanations = EXPLANATIONS[situation.type] || ['A moment to pause.'];
+  let explanations = EXPLANATIONS[situation.type] || ['A moment to pause.'];
+
+  // For redirect situations, personalize with app name and identity
+  if (situation.type === 'TIMEWASTER_APP_OPENED' && sourceAppName) {
+    const identity = user.identityAnchors[0]?.label;
+    const identityMsg = identity
+      ? ` Here's what ${identity} You would do instead.`
+      : ' Here\'s a better option.';
+    explanations = explanations.map(e => e + identityMsg);
+  }
+
   const explanation = explanations[Math.floor(Math.random() * explanations.length)];
 
   return {
@@ -312,6 +419,26 @@ export function generateIntervention(
     alternatives,
     explanation,
     timestamp: Date.now(),
+  };
+}
+
+// Create a redirect-specific situation
+export function createRedirectSituation(sourceApp: string): Situation {
+  const { getTimeBucket } = require('../utils/helpers');
+  const timeBucket = getTimeBucket();
+
+  return {
+    id: generateId(),
+    type: 'TIMEWASTER_APP_OPENED',
+    confidence: 0.95,
+    startedAt: Date.now(),
+    context: {
+      appCategory: 'social_media',
+      timeOfDay: timeBucket,
+      locationCategory: 'unknown',
+      recentCognitiveLoad: 'medium',
+    },
+    eligibleForIntervention: true,
   };
 }
 
@@ -358,4 +485,5 @@ export default {
   rankCandidates,
   generateIntervention,
   simulateSituation,
+  createRedirectSituation,
 };

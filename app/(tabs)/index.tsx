@@ -10,10 +10,12 @@ import {
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { Card, Button, ProgressRing, UrgeButton } from '../../src/components';
+import { Card, Button, ProgressRing, UrgeButton, WellbeingScore } from '../../src/components';
 import { useUserStore } from '../../src/stores/userStore';
 import { useInterventionStore } from '../../src/stores/interventionStore';
 import { usePortfolioStore } from '../../src/stores/portfolioStore';
+import { usePhenotypeStore } from '../../src/stores/phenotypeStore';
+import { useRedirectStore } from '../../src/stores/redirectStore';
 import { simulateSituation, generateIntervention } from '../../src/engine/InterventionEngine';
 import { getGreeting, getTimeBucket } from '../../src/utils/helpers';
 import { analyticsService, AnalyticsEvents } from '../../src/services';
@@ -28,6 +30,8 @@ export default function DashboardScreen() {
   const { user } = useUserStore();
   const { showIntervention, totalInterventions, acceptedCount } = useInterventionStore();
   const { getTodayPortfolio } = usePortfolioStore();
+  const { getWellbeingScore, todaySnapshot, refreshTodaySnapshot } = usePhenotypeStore();
+  const { getStats: getRedirectStats } = useRedirectStore();
   const [refreshing, setRefreshing] = useState(false);
 
   const portfolio = getTodayPortfolio();
@@ -36,6 +40,8 @@ export default function DashboardScreen() {
   const portfolioProgress = totalCategories > 0 ? completedCategories / totalCategories : 0;
 
   const acceptanceRate = totalInterventions > 0 ? acceptedCount / totalInterventions : 0;
+  const wellbeingScore = getWellbeingScore();
+  const redirectStats = getRedirectStats();
 
   const timeBucket = getTimeBucket();
   const greeting = getGreeting();
@@ -49,9 +55,14 @@ export default function DashboardScreen() {
     });
   }, []);
 
-  const handleRefresh = () => {
+  const handleRefresh = async () => {
     setRefreshing(true);
-    setTimeout(() => setRefreshing(false), 1000);
+    try {
+      await refreshTodaySnapshot();
+    } catch (e) {
+      // ignore
+    }
+    setRefreshing(false);
   };
 
   const handleUrgePress = () => {
@@ -140,6 +151,73 @@ export default function DashboardScreen() {
             label="Feeling the urge?"
           />
         </Card>
+
+        {/* Wellbeing Score */}
+        {user?.preferences.phenotypeCollectionEnabled && (
+          <Card style={styles.wellbeingCard}>
+            <View style={styles.wellbeingRow}>
+              <WellbeingScore score={wellbeingScore} size="small" />
+              <View style={styles.wellbeingInfo}>
+                <Text style={styles.sectionTitle}>Wellbeing</Text>
+                <Text style={styles.progressSubtext}>
+                  {wellbeingScore >= 70 ? 'Looking good today' : wellbeingScore >= 40 ? 'Room for improvement' : 'Take care of yourself'}
+                </Text>
+                <TouchableOpacity onPress={() => router.push('/insights')}>
+                  <Text style={styles.seeAllLink}>View insights</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </Card>
+        )}
+
+        {/* Redirect Stats */}
+        {redirectStats.totalRedirects > 0 && (
+          <Card style={styles.redirectStatsCard}>
+            <View style={styles.progressHeader}>
+              <Text style={styles.sectionTitle}>Redirects</Text>
+              <Text style={styles.seeAllLink}>{Math.round(redirectStats.successRate * 100)}% success</Text>
+            </View>
+            <View style={styles.statsGrid}>
+              <View style={styles.statBox}>
+                <Text style={styles.statNumber}>{redirectStats.todayRedirects}</Text>
+                <Text style={styles.statLabel}>Today</Text>
+              </View>
+              <View style={styles.statBox}>
+                <Text style={styles.statNumber}>{redirectStats.totalRedirects}</Text>
+                <Text style={styles.statLabel}>Total</Text>
+              </View>
+              <View style={styles.statBox}>
+                <Text style={styles.statNumber}>{redirectStats.estimatedSavedMinutes}m</Text>
+                <Text style={styles.statLabel}>Saved</Text>
+              </View>
+            </View>
+          </Card>
+        )}
+
+        {/* Sleep Quality (from phenotype) */}
+        {todaySnapshot?.sleepInference && todaySnapshot.sleepInference.estimatedDurationMinutes != null && todaySnapshot.sleepInference.estimatedDurationMinutes > 0 && (
+          <Card style={styles.sleepCard}>
+            <View style={styles.stateHeader}>
+              <Ionicons name="moon" size={20} color="#7C4DFF" />
+              <Text style={styles.stateTitle}>Last Night's Sleep</Text>
+            </View>
+            <View style={styles.stateContent}>
+              <View style={styles.stateItem}>
+                <Text style={styles.stateLabel}>Duration</Text>
+                <Text style={styles.stateValue}>
+                  {(todaySnapshot.sleepInference.estimatedDurationMinutes / 60).toFixed(1)}h
+                </Text>
+              </View>
+              <View style={styles.stateDivider} />
+              <View style={styles.stateItem}>
+                <Text style={styles.stateLabel}>Regularity</Text>
+                <Text style={styles.stateValue}>
+                  {todaySnapshot.sleepInference.regularity}%
+                </Text>
+              </View>
+            </View>
+          </Card>
+        )}
 
         {/* Current State Card */}
         <Card style={styles.stateCard}>
@@ -294,6 +372,23 @@ const styles = StyleSheet.create({
     marginBottom: spacing.lg,
     paddingVertical: spacing.xl,
     alignItems: 'center',
+  },
+  wellbeingCard: {
+    marginBottom: spacing.md,
+  },
+  wellbeingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.lg,
+  },
+  wellbeingInfo: {
+    flex: 1,
+  },
+  redirectStatsCard: {
+    marginBottom: spacing.md,
+  },
+  sleepCard: {
+    marginBottom: spacing.md,
   },
   stateCard: {
     marginBottom: spacing.md,

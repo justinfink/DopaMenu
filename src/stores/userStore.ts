@@ -6,6 +6,7 @@ import {
   IdentityAnchor,
   UserPreferences,
   DEFAULT_IDENTITY_ANCHORS,
+  DEFAULT_PHENOTYPE_SETTINGS,
 } from '../models';
 
 // ============================================
@@ -58,6 +59,15 @@ const defaultPreferences: UserPreferences = {
     { packageName: 'com.facebook.katana', label: 'Facebook', enabled: true },
     { packageName: 'com.reddit.frontpage', label: 'Reddit', enabled: true },
   ],
+  // Digital phenotype collection
+  phenotypeCollectionEnabled: false,
+  phenotypeSettings: DEFAULT_PHENOTYPE_SETTINGS,
+  // App library
+  appLibraryEnabled: true,
+  appLibraryAutoSync: true,
+  // Redirection
+  redirectionEnabled: false,
+  redirectCooldownMinutes: 15,
 };
 
 export const useUserStore = create<UserState>()(

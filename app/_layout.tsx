@@ -6,8 +6,12 @@ import * as SplashScreen from 'expo-splash-screen';
 import * as Notifications from 'expo-notifications';
 import { useUserStore } from '../src/stores/userStore';
 import { useInterventionStore } from '../src/stores/interventionStore';
+import { useRedirectStore } from '../src/stores/redirectStore';
+import { useAppLibraryStore } from '../src/stores/appLibraryStore';
 import { notificationService, analyticsService, AnalyticsEvents, appUsageService } from '../src/services';
-import { simulateSituation, generateIntervention } from '../src/engine/InterventionEngine';
+import { phenotypeCollector } from '../src/services/phenotypeCollector';
+import { simulateSituation, generateIntervention, createRedirectSituation } from '../src/engine/InterventionEngine';
+import { DEFAULT_PHENOTYPE_SETTINGS } from '../src/models';
 import { colors } from '../src/constants/theme';
 
 // Prevent splash screen from auto-hiding
@@ -17,6 +21,8 @@ export default function RootLayout() {
   const [appIsReady, setAppIsReady] = useState(false);
   const { user, isLoading, initializeUser } = useUserStore();
   const { showIntervention } = useInterventionStore();
+  const { startRedirect, getStats: getRedirectStats } = useRedirectStore();
+  const { getRedirectApps } = useAppLibraryStore();
   const notificationListener = useRef<Notifications.Subscription | null>(null);
   const responseListener = useRef<Notifications.Subscription | null>(null);
 
@@ -69,6 +75,12 @@ export default function RootLayout() {
           await appUsageService.startMonitoring(enabledApps);
         }
       }
+
+      // Start phenotype collection if enabled
+      if (currentUser.preferences.phenotypeCollectionEnabled) {
+        const settings = currentUser.preferences.phenotypeSettings || DEFAULT_PHENOTYPE_SETTINGS;
+        await phenotypeCollector.initialize(settings);
+      }
     }
 
     setupServices();
@@ -83,7 +95,16 @@ export default function RootLayout() {
       });
 
       // Handle different notification types
-      if (data?.type === 'intervention' || data?.type === 'high_risk_reminder' || data?.type === 'immediate_checkin') {
+      if (data?.type === 'redirect' && data?.sourceApp) {
+        // Redirect from tracked app detection
+        const sourceApp = String(data.sourceApp);
+        const sourceAppName = String(data.sourceAppName || sourceApp);
+        const situation = createRedirectSituation(sourceApp);
+        const decision = generateIntervention(situation, currentUser, undefined, undefined, sourceAppName);
+        startRedirect(sourceApp, sourceAppName, decision);
+        showIntervention(decision, situation);
+        router.push('/redirect');
+      } else if (data?.type === 'intervention' || data?.type === 'high_risk_reminder' || data?.type === 'immediate_checkin') {
         // Generate an intervention and show it
         const situation = simulateSituation();
         const decision = generateIntervention(situation, currentUser);
@@ -105,6 +126,7 @@ export default function RootLayout() {
       if (responseListener.current) {
         responseListener.current.remove();
       }
+      phenotypeCollector.stop();
     };
   }, [user?.id, user?.preferences.highRiskRemindersEnabled, user?.preferences.appMonitoringEnabled]);
 
@@ -146,6 +168,25 @@ export default function RootLayout() {
           options={{
             presentation: 'modal',
             animation: 'slide_from_bottom',
+          }}
+        />
+        <Stack.Screen
+          name="redirect"
+          options={{
+            presentation: 'transparentModal',
+            animation: 'fade',
+          }}
+        />
+        <Stack.Screen
+          name="insights"
+          options={{
+            animation: 'slide_from_right',
+          }}
+        />
+        <Stack.Screen
+          name="app-config"
+          options={{
+            animation: 'slide_from_right',
           }}
         />
       </Stack>

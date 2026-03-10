@@ -5,3 +5,6 @@ export { InterventionCard } from './InterventionCard';
 export { PortfolioCategory } from './PortfolioCategory';
 export { ProgressRing } from './ProgressRing';
 export { UrgeButton } from './UrgeButton';
+export { InsightCard, InsightRow, InsightBadge, TrendIndicator } from './InsightCard';
+export { AppListItem } from './AppListItem';
+export { WellbeingScore } from './WellbeingScore';

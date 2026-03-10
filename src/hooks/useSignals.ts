@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
 import { Signal, SignalType } from '../models';
 import { getTimeBucket } from '../utils/helpers';
+import { phenotypeCollector } from '../services/phenotypeCollector';
 
 // ============================================
 // useSignals Hook
@@ -68,6 +69,10 @@ export function useSignals({
           unlockCount: unlockCountRef.current,
         });
 
+        // Feed phenotype collector
+        phenotypeCollector.recordScreenOn();
+        phenotypeCollector.recordUnlock();
+
         // If this is a repeated unlock in short time, emit APP_OPEN
         if (unlockCountRef.current > 2) {
           emitSignal('APP_OPEN', {
@@ -80,6 +85,9 @@ export function useSignals({
       // App went to background
       if (nextAppState.match(/inactive|background/) && prevState === 'active') {
         const sessionDuration = Date.now() - sessionStartRef.current;
+
+        // Feed phenotype collector
+        phenotypeCollector.recordScreenOff();
 
         emitSignal('APP_SESSION_DURATION', {
           durationMs: sessionDuration,

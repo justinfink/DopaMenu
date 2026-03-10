@@ -16,8 +16,10 @@ import { Card } from '../../src/components';
 import { useUserStore } from '../../src/stores/userStore';
 import { useInterventionStore } from '../../src/stores/interventionStore';
 import { usePortfolioStore } from '../../src/stores/portfolioStore';
+import { usePhenotypeStore } from '../../src/stores/phenotypeStore';
+import { useRedirectStore } from '../../src/stores/redirectStore';
 import { DEFAULT_IDENTITY_ANCHORS } from '../../src/models';
-import { analyticsService, AnalyticsEvents, notificationService, appUsageService } from '../../src/services';
+import { analyticsService, AnalyticsEvents, notificationService, appUsageService, permissionsService } from '../../src/services';
 import { colors, spacing, borderRadius, typography } from '../../src/constants/theme';
 
 // ============================================
@@ -44,6 +46,8 @@ export default function SettingsScreen() {
   const { user, updatePreferences, addIdentityAnchor, removeIdentityAnchor, reset: resetUser } = useUserStore();
   const { reset: resetInterventions } = useInterventionStore();
   const { reset: resetPortfolio } = usePortfolioStore();
+  const { clearAll: clearPhenotype } = usePhenotypeStore();
+  const { reset: resetRedirects, cooldownMinutes, setCooldownMinutes } = useRedirectStore();
 
   const [expandedSection, setExpandedSection] = useState<string | null>(null);
 
@@ -173,6 +177,32 @@ export default function SettingsScreen() {
     }
   };
 
+  const handlePhenotypeToggle = () => {
+    updatePreferences({
+      phenotypeCollectionEnabled: !user.preferences.phenotypeCollectionEnabled,
+    });
+  };
+
+  const handleRedirectionToggle = async () => {
+    if (!user.preferences.redirectionEnabled && Platform.OS === 'android') {
+      // Check overlay permission
+      const statuses = await permissionsService.checkAllPermissions();
+      const overlayStatus = statuses.find(s => s.type === 'overlay');
+      if (overlayStatus && !overlayStatus.granted) {
+        Alert.alert(
+          'Permission Required',
+          'DopaMenu needs "Display over other apps" permission to show redirect overlays.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Open Settings', onPress: () => permissionsService.openOverlaySettings() },
+          ]
+        );
+        return;
+      }
+    }
+    updatePreferences({ redirectionEnabled: !user.preferences.redirectionEnabled });
+  };
+
   const handleIdentityToggle = (label: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     const existing = user.identityAnchors.find((a) => a.label === label);
@@ -200,6 +230,8 @@ export default function SettingsScreen() {
             resetUser();
             resetInterventions();
             resetPortfolio();
+            clearPhenotype();
+            resetRedirects();
           },
         },
       ]
@@ -511,6 +543,129 @@ export default function SettingsScreen() {
               </View>
             </View>
           </Card>
+        )}
+
+        {/* Digital Phenotype */}
+        <SettingsSection
+          title="Digital Phenotype"
+          icon="body"
+          expanded={expandedSection === 'phenotype'}
+          onToggle={() => toggleSection('phenotype')}
+        >
+          <Text style={styles.sectionDescription}>
+            Passively collect behavioral data to personalize your experience. All data stays on-device.
+          </Text>
+          <Card style={[styles.toggleCard, { marginBottom: spacing.sm }]}>
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleContent}>
+                <View style={styles.toggleText}>
+                  <Text style={styles.toggleTitle}>Enable Collection</Text>
+                  <Text style={styles.toggleDescription}>
+                    Sleep, activity, typing, touch, screen time
+                  </Text>
+                </View>
+              </View>
+              <Switch
+                value={user.preferences.phenotypeCollectionEnabled}
+                onValueChange={handlePhenotypeToggle}
+                trackColor={{ false: colors.border, true: colors.primaryLight }}
+                thumbColor={user.preferences.phenotypeCollectionEnabled ? colors.primary : colors.textTertiary}
+              />
+            </View>
+          </Card>
+        </SettingsSection>
+
+        {/* Redirection */}
+        <SettingsSection
+          title="App Redirection"
+          icon="shield"
+          expanded={expandedSection === 'redirection'}
+          onToggle={() => toggleSection('redirection')}
+        >
+          <Text style={styles.sectionDescription}>
+            Intercept timewasting app launches with a full-screen overlay
+          </Text>
+          <Card style={[styles.toggleCard, { marginBottom: spacing.sm }]}>
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleContent}>
+                <View style={styles.toggleText}>
+                  <Text style={styles.toggleTitle}>Enable Redirection</Text>
+                  <Text style={styles.toggleDescription}>
+                    {Platform.OS === 'android' ? 'Requires overlay permission' : 'Configure in Apps tab'}
+                  </Text>
+                </View>
+              </View>
+              <Switch
+                value={user.preferences.redirectionEnabled}
+                onValueChange={handleRedirectionToggle}
+                trackColor={{ false: colors.border, true: colors.primaryLight }}
+                thumbColor={user.preferences.redirectionEnabled ? colors.primary : colors.textTertiary}
+              />
+            </View>
+          </Card>
+          {user.preferences.redirectionEnabled && (
+            <View style={styles.optionsList}>
+              {[5, 10, 15, 30].map((mins) => (
+                <TouchableOpacity
+                  key={mins}
+                  style={[
+                    styles.optionItem,
+                    cooldownMinutes === mins && styles.optionItemSelected,
+                  ]}
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    setCooldownMinutes(mins);
+                    updatePreferences({ redirectCooldownMinutes: mins });
+                  }}
+                >
+                  <View style={styles.optionContent}>
+                    <Text style={styles.optionLabel}>{mins} min</Text>
+                    <Text style={styles.optionDescription}>Cooldown between redirects</Text>
+                  </View>
+                  {cooldownMinutes === mins && (
+                    <Ionicons name="checkmark-circle" size={24} color={colors.primary} />
+                  )}
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+        </SettingsSection>
+
+        {/* Permissions (Android) */}
+        {Platform.OS === 'android' && (
+          <SettingsSection
+            title="Permissions"
+            icon="key"
+            expanded={expandedSection === 'permissions'}
+            onToggle={() => toggleSection('permissions')}
+          >
+            <Text style={styles.sectionDescription}>
+              Manage permissions DopaMenu needs to function
+            </Text>
+            <View style={styles.optionsList}>
+              <TouchableOpacity style={styles.optionItem} onPress={() => permissionsService.openUsageAccessSettings()}>
+                <View style={styles.optionContent}>
+                  <Text style={styles.optionLabel}>Usage Access</Text>
+                  <Text style={styles.optionDescription}>Detect app launches</Text>
+                </View>
+                <Ionicons name="open-outline" size={20} color={colors.textTertiary} />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.optionItem} onPress={() => permissionsService.openOverlaySettings()}>
+                <View style={styles.optionContent}>
+                  <Text style={styles.optionLabel}>Display Over Apps</Text>
+                  <Text style={styles.optionDescription}>Show redirect overlay</Text>
+                </View>
+                <Ionicons name="open-outline" size={20} color={colors.textTertiary} />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.optionItem} onPress={() => permissionsService.openBatteryOptimizationSettings()}>
+                <View style={styles.optionContent}>
+                  <Text style={styles.optionLabel}>Battery Optimization</Text>
+                  <Text style={styles.optionDescription}>Keep monitoring running</Text>
+                </View>
+                <Ionicons name="open-outline" size={20} color={colors.textTertiary} />
+              </TouchableOpacity>
+            </View>
+          </SettingsSection>
         )}
 
         {/* Quiet Hours Info */}

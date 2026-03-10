@@ -53,6 +53,15 @@ export interface UserPreferences {
   // App usage monitoring (Android only)
   appMonitoringEnabled: boolean;
   trackedApps: TrackedAppConfig[];
+  // Digital phenotype collection
+  phenotypeCollectionEnabled: boolean;
+  phenotypeSettings: PhenotypeSettings;
+  // App library
+  appLibraryEnabled: boolean;
+  appLibraryAutoSync: boolean; // Android: auto-detect installed apps
+  // Redirection
+  redirectionEnabled: boolean;
+  redirectCooldownMinutes: number;
 }
 
 export interface TimeRange {
@@ -70,7 +79,14 @@ export type SignalType =
   | 'DEVICE_UNLOCK'
   | 'CALENDAR_EVENT_END'
   | 'LOCATION_STATE_CHANGE'
-  | 'TIME_OF_DAY_BUCKET';
+  | 'TIME_OF_DAY_BUCKET'
+  | 'STEP_COUNT'
+  | 'BATTERY_STATE'
+  | 'SENSOR_READING'
+  | 'NOTIFICATION_RESPONSE'
+  | 'TYPING_EVENT'
+  | 'TOUCH_EVENT'
+  | 'TIMEWASTER_DETECTED';
 
 export interface Signal {
   id: string;
@@ -91,7 +107,13 @@ export type SituationType =
   | 'LATE_NIGHT_IDLE'
   | 'WAITING_CONTEXT'
   | 'MORNING_ROUTINE'
-  | 'WORK_BREAK';
+  | 'WORK_BREAK'
+  | 'TIMEWASTER_APP_OPENED'
+  | 'EXCESSIVE_SCREEN_TIME'
+  | 'SLEEP_DEFICIT'
+  | 'HIGH_COGNITIVE_LOAD'
+  | 'SEDENTARY_ALERT'
+  | 'MOOD_DIP';
 
 export type TimeBucket =
   | 'early_morning'   // 5-8am
@@ -115,6 +137,16 @@ export type AppCategory =
   | 'communication'
   | 'news'
   | 'games'
+  | 'fitness'
+  | 'education'
+  | 'finance'
+  | 'health'
+  | 'utilities'
+  | 'shopping'
+  | 'travel'
+  | 'food'
+  | 'music'
+  | 'photo_video'
   | 'other';
 
 export interface SituationContext {
@@ -268,3 +300,280 @@ export const DEFAULT_PORTFOLIO_CATEGORIES: Omit<PortfolioCategory, 'id' | 'compl
   { label: 'Learning', icon: 'book' },
   { label: 'Rest', icon: 'moon' },
 ];
+
+// ============================================
+// Digital Phenotype Models
+// ============================================
+
+export interface PhenotypeSettings {
+  screenTime: boolean;
+  unlockPatterns: boolean;
+  sleepInference: boolean;
+  activityLevel: boolean;
+  typingDynamics: boolean;
+  touchPatterns: boolean;
+  socialEngagement: boolean;
+  cognitiveLoad: boolean;
+  circadianProfile: boolean;
+  notificationBehavior: boolean;
+  batteryPatterns: boolean;
+  ambientContext: boolean;
+  dataRetentionDays: number; // default 90
+}
+
+export const DEFAULT_PHENOTYPE_SETTINGS: PhenotypeSettings = {
+  screenTime: true,
+  unlockPatterns: true,
+  sleepInference: true,
+  activityLevel: true,
+  typingDynamics: true,
+  touchPatterns: true,
+  socialEngagement: true,
+  cognitiveLoad: true,
+  circadianProfile: true,
+  notificationBehavior: true,
+  batteryPatterns: true,
+  ambientContext: true,
+  dataRetentionDays: 90,
+};
+
+export interface ScreenTimeData {
+  totalMinutes: number;
+  sessionCount: number;
+  hourlyDistribution: number[]; // 24 buckets
+}
+
+export interface UnlockPatternData {
+  totalUnlocks: number;
+  hourlyDistribution: number[]; // 24 buckets
+  averageSessionSeconds: number;
+}
+
+export interface SleepInferenceData {
+  estimatedBedtime: string | null; // HH:mm
+  estimatedWakeTime: string | null; // HH:mm
+  estimatedDurationMinutes: number | null;
+  qualityScore: number; // 0-100
+  regularity: number; // 0-100 (consistency over 7 days)
+}
+
+export interface ActivityLevelData {
+  stepCount: number;
+  movementMinutes: number;
+  sedentaryMinutes: number;
+  activityClassification: 'sedentary' | 'light' | 'moderate' | 'active';
+}
+
+export interface TypingDynamicsData {
+  averageCharsPerMinute: number;
+  backspaceRatio: number; // 0-1
+  averagePauseMs: number;
+  sessionCount: number;
+}
+
+export interface TouchPatternData {
+  averageScrollVelocity: number;
+  tapFrequencyPerMinute: number;
+  interactionIntensity: number; // 0-100
+}
+
+export interface SocialEngagementData {
+  messagingSessionCount: number;
+  communicationAppMinutes: number;
+  socialMediaMinutes: number;
+}
+
+export interface CognitiveLoadData {
+  calendarEventCount: number;
+  appSwitchesPerHour: number;
+  multitaskingScore: number; // 0-100
+}
+
+export interface CircadianProfileData {
+  firstDeviceUse: string | null; // HH:mm
+  lastDeviceUse: string | null; // HH:mm
+  peakActivityHour: number; // 0-23
+  regularityScore: number; // 0-100
+}
+
+export interface NotificationBehaviorData {
+  averageResponseTimeMs: number;
+  ignoredCount: number;
+  interactionRate: number; // 0-1
+  totalReceived: number;
+}
+
+export interface BatteryPatternData {
+  chargeStartTimes: string[]; // HH:mm
+  chargeEndTimes: string[]; // HH:mm
+  lowBatteryMoments: number;
+  routineRegularity: number; // 0-100
+}
+
+export interface AmbientContextData {
+  averageBrightness: number; // 0-1
+  orientationChanges: number;
+}
+
+export interface MoodProxyData {
+  score: number; // 0-100
+  contributors: {
+    factor: string;
+    influence: number; // -1 to +1
+  }[];
+}
+
+export interface PhenotypeSnapshot {
+  id: string;
+  date: string; // YYYY-MM-DD
+  timestamp: number;
+  screenTime: ScreenTimeData;
+  unlockPatterns: UnlockPatternData;
+  sleepInference: SleepInferenceData;
+  activityLevel: ActivityLevelData;
+  typingDynamics: TypingDynamicsData;
+  touchPatterns: TouchPatternData;
+  socialEngagement: SocialEngagementData;
+  cognitiveLoad: CognitiveLoadData;
+  circadianProfile: CircadianProfileData;
+  notificationBehavior: NotificationBehaviorData;
+  batteryPatterns: BatteryPatternData;
+  ambientContext: AmbientContextData;
+  moodProxy: MoodProxyData;
+  wellbeingScore: number; // 0-100 composite
+}
+
+export type TrendDirection = 'improving' | 'declining' | 'stable';
+
+export interface PhenotypeTrend {
+  dimension: string;
+  direction: TrendDirection;
+  magnitude: number; // 0-1
+  period: '7d' | '30d';
+}
+
+export interface PhenotypeAnomaly {
+  dimension: string;
+  deviation: number; // standard deviations from baseline
+  message: string;
+  timestamp: number;
+}
+
+export interface PhenotypePattern {
+  id: string;
+  label: string; // e.g., "afternoon slump", "late-night scroll"
+  description: string;
+  confidence: number; // 0-1
+  triggerConditions: string;
+}
+
+export interface PhenotypeProfile {
+  lastUpdated: number;
+  averages7d: Partial<PhenotypeSnapshot>;
+  averages30d: Partial<PhenotypeSnapshot>;
+  trends: PhenotypeTrend[];
+  anomalies: PhenotypeAnomaly[];
+  patterns: PhenotypePattern[];
+  wellbeingScore: number; // 0-100
+  wellbeingTrend: TrendDirection;
+}
+
+// ============================================
+// App Library Models
+// ============================================
+
+export interface InstalledApp {
+  id: string;
+  packageName: string; // Android package or iOS bundle ID
+  displayName: string;
+  icon?: string; // base64 or URI
+  category: AppCategory;
+  source: 'auto_detected' | 'user_added' | 'curated_catalog';
+}
+
+export type AppDesignation = 'aligned' | 'neutral' | 'timewaster';
+export type AppPriority = 'high' | 'medium' | 'low' | 'none';
+
+export interface UserAppConfig {
+  appId: string; // references InstalledApp.id
+  priority: AppPriority;
+  identityGoals: string[]; // identity anchor IDs
+  designation: AppDesignation;
+  redirectBehavior: 'full_overlay' | 'notification' | 'none';
+  dailyTimeLimitMinutes?: number;
+  notes?: string;
+}
+
+export interface CatalogApp {
+  name: string;
+  packageName: string; // Android package name
+  category: AppCategory;
+  defaultDesignation: AppDesignation;
+  suggestedIdentityTags: string[]; // identity anchor labels
+  icon: string; // Ionicons name
+  isCommonTimewaster: boolean;
+}
+
+// ============================================
+// Redirection Models
+// ============================================
+
+export type RedirectOutcome = 'redirected' | 'continued' | 'dismissed' | 'snoozed';
+
+export interface RedirectEvent {
+  id: string;
+  triggeredAt: number;
+  sourceApp: string; // package name
+  sourceAppName: string;
+  interventionId?: string;
+  outcome: RedirectOutcome;
+  timeSpentMs: number; // time in redirect overlay
+  situationType: SituationType;
+}
+
+export interface RedirectStats {
+  totalRedirects: number;
+  successCount: number; // outcome === 'redirected'
+  successRate: number; // 0-1
+  topTimewasters: { app: string; count: number }[];
+  estimatedSavedMinutes: number;
+  todayRedirects: number;
+  todaySuccessCount: number;
+}
+
+// ============================================
+// Interaction Tracking Models
+// ============================================
+
+export interface TypingSession {
+  startedAt: number;
+  endedAt: number;
+  totalChars: number;
+  backspaceCount: number;
+  pauseCount: number; // pauses > 2 seconds
+  averagePauseMs: number;
+}
+
+export interface TouchSession {
+  startedAt: number;
+  endedAt: number;
+  scrollEvents: number;
+  tapEvents: number;
+  averageScrollVelocity: number;
+}
+
+// ============================================
+// Sensor Data Models
+// ============================================
+
+export interface SensorReading {
+  type: 'accelerometer' | 'pedometer' | 'battery' | 'brightness';
+  timestamp: number;
+  value: Record<string, number>;
+}
+
+export interface BatterySnapshot {
+  level: number; // 0-1
+  isCharging: boolean;
+  timestamp: number;
+}
