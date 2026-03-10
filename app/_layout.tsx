@@ -152,6 +152,14 @@ export default function RootLayout() {
         const enabledApps = currentUser.preferences.trackedApps.filter(a => a.enabled);
         if (enabledApps.length > 0) {
           await appUsageService.startMonitoring(enabledApps);
+          // Sync tracked apps to SharedPreferences for the AccessibilityService
+          await appUsageService.updateTrackedApps(enabledApps.map(a => a.packageName));
+        }
+      } else if (Platform.OS === 'android') {
+        // Even if monitoring is "off", sync tracked apps in case user enables AccessibilityService directly
+        const enabledApps = currentUser.preferences.trackedApps.filter(a => a.enabled);
+        if (enabledApps.length > 0) {
+          await appUsageService.updateTrackedApps(enabledApps.map(a => a.packageName));
         }
       }
 

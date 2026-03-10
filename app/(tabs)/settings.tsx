@@ -52,7 +52,7 @@ export default function SettingsScreen() {
   const { reset: resetRedirects, cooldownMinutes, setCooldownMinutes } = useRedirectStore();
 
   const [expandedSection, setExpandedSection] = useState<string | null>(null);
-  const [permStatus, setPermStatus] = useState({ usageAccess: false, overlay: false });
+  const [permStatus, setPermStatus] = useState({ usageAccess: false, overlay: false, accessibilityService: false });
 
   // Live permission status - re-checks when user returns from system settings
   const refreshPermissions = useCallback(async () => {
@@ -152,17 +152,17 @@ export default function SettingsScreen() {
     const newValue = !user.preferences.appMonitoringEnabled;
 
     if (newValue) {
-      // Check permission first - use live status
-      if (!permStatus.usageAccess) {
+      // Check if at least one detection mechanism is enabled
+      if (!permStatus.accessibilityService && !permStatus.usageAccess) {
         Alert.alert(
           'Permission Required',
-          'DopaMenu needs Usage Access permission to detect when you open certain apps. You\'ll be taken to settings - grant permission and come back.',
+          'DopaMenu needs the Accessibility Service (recommended) or Usage Access permission to detect app launches. Enable one in the Permissions section below.',
           [
             { text: 'Cancel', style: 'cancel' },
             {
-              text: 'Open Settings',
+              text: 'Open Accessibility Settings',
               onPress: async () => {
-                await appUsageService.requestPermission();
+                await appUsageService.openAccessibilitySettings();
               },
             },
           ]
@@ -497,7 +497,7 @@ export default function SettingsScreen() {
                   <View style={styles.toggleText}>
                     <Text style={styles.toggleTitle}>Enable Detection</Text>
                     <Text style={styles.toggleDescription}>
-                      Requires Usage Access permission
+                      Requires Accessibility Service or Usage Access
                     </Text>
                   </View>
                 </View>
@@ -647,9 +647,27 @@ export default function SettingsScreen() {
             onToggle={() => toggleSection('permissions')}
           >
             <Text style={styles.sectionDescription}>
-              DopaMenu needs one Android permission to work. Tap to open settings, then return here - it updates automatically.
+              DopaMenu needs permissions to detect app launches. Tap to open settings, then return here - status updates automatically.
             </Text>
             <View style={styles.optionsList}>
+              <TouchableOpacity
+                style={[styles.optionItem, permStatus.accessibilityService && styles.optionItemGranted]}
+                onPress={() => permissionsService.openAccessibilitySettings()}
+              >
+                <View style={styles.optionContent}>
+                  <Text style={styles.optionLabel}>Accessibility Service</Text>
+                  <Text style={styles.optionDescription}>
+                    {permStatus.accessibilityService
+                      ? 'Enabled - real-time app detection active'
+                      : 'Recommended - enables instant app detection'}
+                  </Text>
+                </View>
+                <Ionicons
+                  name={permStatus.accessibilityService ? 'checkmark-circle' : 'open-outline'}
+                  size={20}
+                  color={permStatus.accessibilityService ? colors.success : colors.primary}
+                />
+              </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.optionItem, permStatus.usageAccess && styles.optionItemGranted]}
                 onPress={() => permissionsService.openUsageAccessSettings()}
@@ -657,7 +675,9 @@ export default function SettingsScreen() {
                 <View style={styles.optionContent}>
                   <Text style={styles.optionLabel}>Usage Access</Text>
                   <Text style={styles.optionDescription}>
-                    {permStatus.usageAccess ? 'Granted - app detection active' : 'Required to detect app launches'}
+                    {permStatus.usageAccess
+                      ? 'Granted - usage stats and fallback detection active'
+                      : 'For usage statistics and fallback app detection'}
                   </Text>
                 </View>
                 <Ionicons

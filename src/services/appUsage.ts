@@ -42,6 +42,7 @@ export interface PendingRedirect {
 export interface PermissionsStatus {
   usageAccess: boolean;
   overlay: boolean;
+  accessibilityService: boolean;
 }
 
 // Native module interface (Android only)
@@ -56,6 +57,9 @@ interface AppUsageModule {
   checkPermissionsStatus(): Promise<PermissionsStatus>;
   canDrawOverlays(): Promise<boolean>;
   requestOverlayPermission(): Promise<void>;
+  isAccessibilityServiceEnabled(): Promise<boolean>;
+  openAccessibilitySettings(): Promise<void>;
+  updateTrackedApps(packageNames: string[]): Promise<void>;
   getAppUsageStats(days: number): Promise<Array<{ packageName: string; totalTimeMs: number; lastUsed: number }>>;
 }
 
@@ -174,6 +178,8 @@ export const appUsageService = {
     try {
       const packageNames = trackedApps.map(app => app.packageName);
       await NativeAppUsage.startMonitoring(packageNames);
+      // Also sync tracked apps to SharedPreferences for the AccessibilityService
+      await NativeAppUsage.updateTrackedApps(packageNames);
       console.log('[AppUsage] Started monitoring', packageNames.length, 'apps');
       return true;
     } catch (error) {
@@ -263,12 +269,50 @@ export const appUsageService = {
    */
   async checkPermissionsStatus(): Promise<PermissionsStatus> {
     if (!this.isSupported() || !NativeAppUsage) {
-      return { usageAccess: false, overlay: false };
+      return { usageAccess: false, overlay: false, accessibilityService: false };
     }
     try {
       return await NativeAppUsage.checkPermissionsStatus();
     } catch {
-      return { usageAccess: false, overlay: false };
+      return { usageAccess: false, overlay: false, accessibilityService: false };
+    }
+  },
+
+  /**
+   * Check if the AccessibilityService is enabled (Android only)
+   * This is the PRIMARY detection mechanism - real-time, event-driven
+   */
+  async isAccessibilityServiceEnabled(): Promise<boolean> {
+    if (!this.isSupported() || !NativeAppUsage) return false;
+    try {
+      return await NativeAppUsage.isAccessibilityServiceEnabled();
+    } catch {
+      return false;
+    }
+  },
+
+  /**
+   * Open Android Accessibility Settings so user can enable the service
+   */
+  async openAccessibilitySettings(): Promise<void> {
+    if (!this.isSupported() || !NativeAppUsage) return;
+    try {
+      await NativeAppUsage.openAccessibilitySettings();
+    } catch {
+      await Linking.openSettings();
+    }
+  },
+
+  /**
+   * Sync tracked apps to SharedPreferences for the AccessibilityService to read
+   * Call this whenever the tracked apps list changes
+   */
+  async updateTrackedApps(packageNames: string[]): Promise<void> {
+    if (!this.isSupported() || !NativeAppUsage) return;
+    try {
+      await NativeAppUsage.updateTrackedApps(packageNames);
+    } catch {
+      // ignore
     }
   },
 

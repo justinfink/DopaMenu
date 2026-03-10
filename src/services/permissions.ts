@@ -7,6 +7,7 @@ import { Platform, Linking, NativeModules } from 'react-native';
 // ============================================
 
 export type PermissionType =
+  | 'accessibility'
   | 'usage_access'
   | 'overlay'
   | 'notifications'
@@ -31,11 +32,20 @@ class PermissionsService {
 
     if (Platform.OS === 'android') {
       statuses.push({
+        type: 'accessibility',
+        granted: await this.checkAccessibilityService(),
+        label: 'Accessibility Service',
+        description: 'Recommended. Enables real-time app detection when you open a tracked app.',
+        required: true,
+        platform: 'android',
+      });
+
+      statuses.push({
         type: 'usage_access',
         granted: await this.checkUsageAccess(),
         label: 'Usage Access',
-        description: 'Required to detect which apps you use and for how long',
-        required: true,
+        description: 'Fallback detection + usage statistics. Enable if you prefer not to use Accessibility Service.',
+        required: false,
         platform: 'android',
       });
 
@@ -81,6 +91,19 @@ class PermissionsService {
 
   // ── Individual Checks ─────────────────────────
 
+  private async checkAccessibilityService(): Promise<boolean> {
+    if (Platform.OS !== 'android') return false;
+    try {
+      const { DopaMenuAppUsage } = NativeModules;
+      if (DopaMenuAppUsage?.isAccessibilityServiceEnabled) {
+        return await DopaMenuAppUsage.isAccessibilityServiceEnabled();
+      }
+    } catch {
+      // Module may not be available
+    }
+    return false;
+  }
+
   private async checkUsageAccess(): Promise<boolean> {
     if (Platform.OS !== 'android') return false;
     try {
@@ -121,6 +144,9 @@ class PermissionsService {
 
   async openPermissionSettings(type: PermissionType): Promise<void> {
     switch (type) {
+      case 'accessibility':
+        await this.openAccessibilitySettings();
+        break;
       case 'usage_access':
         await this.openUsageAccessSettings();
         break;
@@ -140,6 +166,21 @@ class PermissionsService {
       case 'calendar':
         await this.openAppSettings();
         break;
+    }
+  }
+
+  async openAccessibilitySettings(): Promise<void> {
+    if (Platform.OS === 'android') {
+      try {
+        const { DopaMenuAppUsage } = NativeModules;
+        if (DopaMenuAppUsage?.openAccessibilitySettings) {
+          await DopaMenuAppUsage.openAccessibilitySettings();
+          return;
+        }
+      } catch {
+        // Fallback
+      }
+      await Linking.openSettings();
     }
   }
 

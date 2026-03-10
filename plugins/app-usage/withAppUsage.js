@@ -64,7 +64,7 @@ function withAppUsageManifest(config) {
       });
     }
 
-    // Add the monitoring service
+    // Add the monitoring service (UsageStatsManager fallback)
     const application = manifest.application[0];
     if (!application.service) {
       application.service = [];
@@ -86,6 +86,33 @@ function withAppUsageManifest(config) {
           $: {
             'android:name': 'android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE',
             'android:value': 'App usage monitoring for digital wellbeing',
+          },
+        }],
+      });
+    }
+
+    // Add the AccessibilityService (PRIMARY detection mechanism)
+    const hasAccessibilityService = application.service.some(
+      (svc) => svc.$['android:name'] === '.DopaMenuAccessibilityService'
+    );
+
+    if (!hasAccessibilityService) {
+      application.service.push({
+        $: {
+          'android:name': '.DopaMenuAccessibilityService',
+          'android:permission': 'android.permission.BIND_ACCESSIBILITY_SERVICE',
+          'android:label': 'DopaMenu App Detection',
+          'android:exported': 'false',
+        },
+        'intent-filter': [{
+          action: [{
+            $: { 'android:name': 'android.accessibilityservice.AccessibilityService' },
+          }],
+        }],
+        'meta-data': [{
+          $: {
+            'android:name': 'android.accessibilityservice',
+            'android:resource': '@xml/accessibility_service_config',
           },
         }],
       });
@@ -133,9 +160,28 @@ function withAppUsageNativeCode(config) {
       const packageCode = getPackageCode(packageName);
       fs.writeFileSync(path.join(javaDir, 'DopaMenuAppUsagePackage.kt'), packageCode);
 
-      // Write the service
+      // Write the service (UsageStatsManager fallback)
       const serviceCode = getServiceCode(packageName);
       fs.writeFileSync(path.join(javaDir, 'AppUsageMonitorService.kt'), serviceCode);
+
+      // Write the AccessibilityService (PRIMARY detection)
+      const accessibilityServiceCode = getAccessibilityServiceCode(packageName);
+      fs.writeFileSync(path.join(javaDir, 'DopaMenuAccessibilityService.kt'), accessibilityServiceCode);
+
+      // Write accessibility service XML config
+      const xmlDir = path.join(projectRoot, 'android', 'app', 'src', 'main', 'res', 'xml');
+      if (!fs.existsSync(xmlDir)) {
+        fs.mkdirSync(xmlDir, { recursive: true });
+      }
+      fs.writeFileSync(path.join(xmlDir, 'accessibility_service_config.xml'), getAccessibilityServiceXml());
+
+      // Write/update strings.xml with accessibility service description
+      const valuesDir = path.join(projectRoot, 'android', 'app', 'src', 'main', 'res', 'values');
+      if (!fs.existsSync(valuesDir)) {
+        fs.mkdirSync(valuesDir, { recursive: true });
+      }
+      const stringsPath = path.join(valuesDir, 'dopamenu_strings.xml');
+      fs.writeFileSync(stringsPath, getAccessibilityStringsXml());
 
       return config;
     },
@@ -156,10 +202,12 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
+import android.content.ComponentName
 import android.net.Uri
 import android.os.Build
 import android.os.Process
 import android.provider.Settings
+import android.text.TextUtils
 import android.util.Base64
 import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
@@ -459,6 +507,62 @@ class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
     }
 
     @ReactMethod
+    fun isAccessibilityServiceEnabled(promise: Promise) {
+        try {
+            val componentName = ComponentName(
+                reactApplicationContext,
+                DopaMenuAccessibilityService::class.java
+            )
+            val enabledServices = Settings.Secure.getString(
+                reactApplicationContext.contentResolver,
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+            ) ?: ""
+
+            val splitter = TextUtils.SimpleStringSplitter(':')
+            splitter.setString(enabledServices)
+            while (splitter.hasNext()) {
+                val enabled = ComponentName.unflattenFromString(splitter.next())
+                if (enabled == componentName) {
+                    promise.resolve(true)
+                    return
+                }
+            }
+            promise.resolve(false)
+        } catch (e: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun openAccessibilitySettings(promise: Promise) {
+        try {
+            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            reactApplicationContext.startActivity(intent)
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
+
+    @ReactMethod
+    fun updateTrackedApps(packageNames: ReadableArray, promise: Promise) {
+        try {
+            val apps = (0 until packageNames.size()).map { packageNames.getString(it) ?: "" }
+            val prefs = reactApplicationContext.getSharedPreferences(
+                DopaMenuAccessibilityService.TRACKED_APPS_PREFS,
+                Context.MODE_PRIVATE
+            )
+            prefs.edit()
+                .putStringSet(DopaMenuAccessibilityService.KEY_TRACKED_APPS, apps.toSet())
+                .apply()
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
+
+    @ReactMethod
     fun checkPermissionsStatus(promise: Promise) {
         try {
             val result = Arguments.createMap()
@@ -468,6 +572,28 @@ class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
             } else {
                 true
             })
+
+            // Check accessibility service status
+            val componentName = ComponentName(
+                reactApplicationContext,
+                DopaMenuAccessibilityService::class.java
+            )
+            val enabledServices = Settings.Secure.getString(
+                reactApplicationContext.contentResolver,
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+            ) ?: ""
+            var accessibilityEnabled = false
+            val splitter = TextUtils.SimpleStringSplitter(':')
+            splitter.setString(enabledServices)
+            while (splitter.hasNext()) {
+                val enabled = ComponentName.unflattenFromString(splitter.next())
+                if (enabled == componentName) {
+                    accessibilityEnabled = true
+                    break
+                }
+            }
+            result.putBoolean("accessibilityService", accessibilityEnabled)
+
             promise.resolve(result)
         } catch (e: Exception) {
             promise.reject("ERROR", e.message)
@@ -484,6 +610,150 @@ class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
         // Required for NativeEventEmitter
     }
 }
+`;
+}
+
+function getAccessibilityServiceCode(packageName) {
+  return `package ${packageName}
+
+import android.accessibilityservice.AccessibilityService
+import android.content.Context
+import android.content.Intent
+import android.content.SharedPreferences
+import android.view.accessibility.AccessibilityEvent
+
+class DopaMenuAccessibilityService : AccessibilityService() {
+
+    companion object {
+        const val TRACKED_APPS_PREFS = "dopamenu_tracked_apps"
+        const val KEY_TRACKED_APPS = "tracked_package_names"
+        private const val REDIRECT_PREFS = "dopamenu_redirect"
+        private const val KEY_PENDING_APP = "pending_redirect_app"
+        private const val KEY_PENDING_TIMESTAMP = "pending_redirect_timestamp"
+        private const val DETECTION_COOLDOWN = 30000L // 30 second cooldown
+
+        // Common system packages to ignore
+        private val IGNORED_PACKAGES = setOf(
+            "com.android.systemui",
+            "com.android.launcher",
+            "com.android.launcher3",
+            "com.google.android.apps.nexuslauncher",
+            "com.google.android.packageinstaller",
+            "com.android.settings",
+            "com.android.vending",
+            "com.sec.android.app.launcher",
+            "com.miui.home",
+            "com.huawei.android.launcher",
+            "com.oppo.launcher",
+            "com.oneplus.launcher",
+        )
+    }
+
+    private var lastDetectedApp: String? = null
+    private var lastDetectionTime: Long = 0L
+    private var trackedAppsCache: Set<String> = emptySet()
+    private var cacheTimestamp: Long = 0L
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event == null) return
+        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+
+        val eventPackage = event.packageName?.toString() ?: return
+
+        // Quick-reject: ignore our own app and common system packages
+        if (eventPackage == applicationContext.packageName) return
+        if (IGNORED_PACKAGES.contains(eventPackage)) return
+
+        // Load tracked apps (cached, refreshed every 5 seconds)
+        val trackedApps = getTrackedApps()
+        if (trackedApps.isEmpty()) return
+        if (!trackedApps.contains(eventPackage)) return
+
+        // Cooldown: don't re-trigger for the same app within 30s
+        val now = System.currentTimeMillis()
+        if (eventPackage == lastDetectedApp && now - lastDetectionTime < DETECTION_COOLDOWN) return
+
+        lastDetectedApp = eventPackage
+        lastDetectionTime = now
+
+        // Store pending redirect in SharedPreferences (same as AppUsageMonitorService)
+        storePendingRedirect(eventPackage)
+
+        // Bring DopaMenu to the foreground
+        bringAppToForeground(eventPackage)
+    }
+
+    override fun onInterrupt() {
+        // Required override - nothing to clean up
+    }
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        // Pre-load tracked apps on service start
+        trackedAppsCache = loadTrackedAppsFromPrefs()
+        cacheTimestamp = System.currentTimeMillis()
+    }
+
+    private fun getTrackedApps(): Set<String> {
+        val now = System.currentTimeMillis()
+        // Refresh cache every 5 seconds to pick up changes from JS layer
+        if (now - cacheTimestamp > 5000) {
+            trackedAppsCache = loadTrackedAppsFromPrefs()
+            cacheTimestamp = now
+        }
+        return trackedAppsCache
+    }
+
+    private fun loadTrackedAppsFromPrefs(): Set<String> {
+        val prefs = applicationContext.getSharedPreferences(TRACKED_APPS_PREFS, Context.MODE_PRIVATE)
+        return prefs.getStringSet(KEY_TRACKED_APPS, emptySet()) ?: emptySet()
+    }
+
+    private fun storePendingRedirect(packageName: String) {
+        val prefs = applicationContext.getSharedPreferences(REDIRECT_PREFS, Context.MODE_PRIVATE)
+        prefs.edit().apply {
+            putString(KEY_PENDING_APP, packageName)
+            putLong(KEY_PENDING_TIMESTAMP, System.currentTimeMillis())
+            apply()
+        }
+    }
+
+    private fun bringAppToForeground(sourcePackage: String) {
+        try {
+            val launchIntent = packageManager.getLaunchIntentForPackage(applicationContext.packageName)
+            launchIntent?.addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP
+            )
+            launchIntent?.putExtra("redirect_source_app", sourcePackage)
+            launchIntent?.putExtra("redirect_triggered", true)
+            startActivity(launchIntent)
+        } catch (e: Exception) {
+            // If we can't bring the app to foreground, the pending redirect
+            // will be picked up when the user returns to DopaMenu
+        }
+    }
+}
+`;
+}
+
+function getAccessibilityServiceXml() {
+  return `<?xml version="1.0" encoding="utf-8"?>
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:notificationTimeout="100"
+    android:canRetrieveWindowContent="false"
+    android:description="@string/accessibility_service_description" />
+`;
+}
+
+function getAccessibilityStringsXml() {
+  return `<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_service_description">DopaMenu uses this service to detect when you open apps you want to use mindfully. When you open a tracked app, DopaMenu shows a brief pause screen with healthier alternatives. No personal data is collected — all processing happens on your device.</string>
+</resources>
 `;
 }
 
