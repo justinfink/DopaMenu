@@ -39,16 +39,8 @@ function withAppUsageManifest(config) {
       });
     }
 
-    // Add SYSTEM_ALERT_WINDOW permission (for overlay/redirection)
-    const hasOverlayPerm = manifest['uses-permission'].some(
-      (perm) => perm.$['android:name'] === 'android.permission.SYSTEM_ALERT_WINDOW'
-    );
-
-    if (!hasOverlayPerm) {
-      manifest['uses-permission'].push({
-        $: { 'android:name': 'android.permission.SYSTEM_ALERT_WINDOW' },
-      });
-    }
+    // Note: SYSTEM_ALERT_WINDOW is NOT needed — redirect works by bringing
+    // DopaMenu's own Activity to the foreground, not by drawing a system overlay.
 
     // Add QUERY_ALL_PACKAGES permission (for listing installed apps)
     const hasQueryPerm = manifest['uses-permission'].some(

@@ -40,15 +40,6 @@ class PermissionsService {
       });
 
       statuses.push({
-        type: 'overlay',
-        granted: await this.checkOverlayPermission(),
-        label: 'Display Over Other Apps',
-        description: 'Required to show redirect screen when you open a timewaster app',
-        required: true,
-        platform: 'android',
-      });
-
-      statuses.push({
         type: 'battery_optimization',
         granted: false, // Cannot easily check, assume not granted
         label: 'Battery Optimization',
