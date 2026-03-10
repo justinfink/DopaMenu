@@ -427,6 +427,62 @@ class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
     }
 
     @ReactMethod
+    fun getPendingRedirect(promise: Promise) {
+        try {
+            val prefs = reactApplicationContext.getSharedPreferences(
+                AppUsageMonitorService.PREFS_NAME, Context.MODE_PRIVATE
+            )
+            val pendingApp = prefs.getString(AppUsageMonitorService.KEY_PENDING_APP, null)
+            val pendingTimestamp = prefs.getLong(AppUsageMonitorService.KEY_PENDING_TIMESTAMP, 0)
+
+            if (pendingApp != null && pendingTimestamp > 0) {
+                // Only return if it's recent (within last 30 seconds)
+                val age = System.currentTimeMillis() - pendingTimestamp
+                if (age < 30000) {
+                    val result = Arguments.createMap().apply {
+                        putString("packageName", pendingApp)
+                        putDouble("timestamp", pendingTimestamp.toDouble())
+                    }
+                    promise.resolve(result)
+                    return
+                }
+            }
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.resolve(null)
+        }
+    }
+
+    @ReactMethod
+    fun clearPendingRedirect(promise: Promise) {
+        try {
+            val prefs = reactApplicationContext.getSharedPreferences(
+                AppUsageMonitorService.PREFS_NAME, Context.MODE_PRIVATE
+            )
+            prefs.edit().clear().apply()
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.resolve(null)
+        }
+    }
+
+    @ReactMethod
+    fun checkPermissionsStatus(promise: Promise) {
+        try {
+            val result = Arguments.createMap()
+            result.putBoolean("usageAccess", hasUsageStatsPermission())
+            result.putBoolean("overlay", if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Settings.canDrawOverlays(reactApplicationContext)
+            } else {
+                true
+            })
+            promise.resolve(result)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
+
+    @ReactMethod
     fun addListener(eventName: String) {
         // Required for NativeEventEmitter
     }
@@ -463,9 +519,11 @@ function getServiceCode(packageName) {
   return `package ${packageName}
 
 import android.app.*
+import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -478,17 +536,24 @@ class AppUsageMonitorService : Service() {
     private var runnable: Runnable? = null
     private var monitoringPackages: List<String> = emptyList()
     private var lastForegroundApp: String? = null
+    private var lastDetectionTime: Long = 0L
+    private var prefs: SharedPreferences? = null
 
     companion object {
         private const val CHANNEL_ID = "app_monitoring"
         private const val NOTIFICATION_ID = 1001
-        private const val CHECK_INTERVAL = 2000L // Check every 2 seconds
+        private const val CHECK_INTERVAL = 1000L // Check every 1 second for faster detection
+        private const val DETECTION_COOLDOWN = 30000L // 30 second cooldown between detections of same app
+        const val PREFS_NAME = "dopamenu_redirect"
+        const val KEY_PENDING_APP = "pending_redirect_app"
+        const val KEY_PENDING_TIMESTAMP = "pending_redirect_timestamp"
     }
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         handler = Handler(Looper.getMainLooper())
+        prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -558,37 +623,73 @@ class AppUsageMonitorService : Service() {
     }
 
     private fun checkForegroundApp() {
-        val usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-        val endTime = System.currentTimeMillis()
-        val startTime = endTime - 5000 // Last 5 seconds
+        try {
+            val usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+            val endTime = System.currentTimeMillis()
+            val startTime = endTime - 3000 // Last 3 seconds
 
-        val stats = usageStatsManager.queryUsageStats(
-            UsageStatsManager.INTERVAL_BEST,
-            startTime,
-            endTime
-        )
+            // Use UsageEvents API for real-time foreground app detection
+            // This is much more reliable than queryUsageStats for detecting current app
+            val usageEvents = usageStatsManager.queryEvents(startTime, endTime)
+            var currentForeground: String? = null
+            val event = UsageEvents.Event()
 
-        val currentForeground = stats
-            ?.filter { it.lastTimeUsed > startTime }
-            ?.maxByOrNull { it.lastTimeUsed }
-            ?.packageName
+            while (usageEvents.hasNextEvent()) {
+                usageEvents.getNextEvent(event)
+                // MOVE_TO_FOREGROUND (1) indicates an app has come to the foreground
+                if (event.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND) {
+                    currentForeground = event.packageName
+                }
+            }
 
-        if (currentForeground != null &&
-            currentForeground != lastForegroundApp &&
-            monitoringPackages.contains(currentForeground)) {
+            // Fallback to queryUsageStats if no events found
+            if (currentForeground == null) {
+                val stats = usageStatsManager.queryUsageStats(
+                    UsageStatsManager.INTERVAL_BEST,
+                    endTime - 5000,
+                    endTime
+                )
+                currentForeground = stats
+                    ?.filter { it.lastTimeUsed > endTime - 5000 }
+                    ?.maxByOrNull { it.lastTimeUsed }
+                    ?.packageName
+            }
 
-            // Detected a tracked app launch!
-            lastForegroundApp = currentForeground
-            onTrackedAppLaunched(currentForeground)
-        } else if (currentForeground != null) {
-            lastForegroundApp = currentForeground
+            if (currentForeground != null &&
+                currentForeground != packageName && // Don't detect ourselves
+                currentForeground != lastForegroundApp &&
+                monitoringPackages.contains(currentForeground)) {
+
+                val now = System.currentTimeMillis()
+                if (now - lastDetectionTime > DETECTION_COOLDOWN) {
+                    // Detected a tracked app launch!
+                    lastDetectionTime = now
+                    lastForegroundApp = currentForeground
+                    onTrackedAppLaunched(currentForeground)
+                }
+            } else if (currentForeground != null) {
+                lastForegroundApp = currentForeground
+            }
+        } catch (e: Exception) {
+            // Silently handle - permission might have been revoked
         }
     }
 
     private fun onTrackedAppLaunched(packageName: String) {
+        // Store the pending redirect in SharedPreferences for the JS layer to pick up
+        prefs?.edit()?.apply {
+            putString(KEY_PENDING_APP, packageName)
+            putLong(KEY_PENDING_TIMESTAMP, System.currentTimeMillis())
+            apply()
+        }
+
         // Bring DopaMenu to foreground for full-screen redirect overlay
         val launchIntent = packageManager.getLaunchIntentForPackage(this.packageName)
-        launchIntent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+        launchIntent?.addFlags(
+            Intent.FLAG_ACTIVITY_NEW_TASK or
+            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+            Intent.FLAG_ACTIVITY_CLEAR_TOP
+        )
         launchIntent?.putExtra("redirect_source_app", packageName)
         launchIntent?.putExtra("redirect_triggered", true)
 

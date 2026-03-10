@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,7 @@ import {
   SafeAreaView,
   ScrollView,
   TouchableOpacity,
+  Platform,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -13,7 +14,8 @@ import { Card, ProgressRing, WellbeingScore } from '../src/components';
 import { InsightCard, InsightRow, InsightBadge, TrendIndicator } from '../src/components/InsightCard';
 import { usePhenotype } from '../src/hooks/usePhenotype';
 import { useRedirectStore } from '../src/stores/redirectStore';
-import { analyticsService } from '../src/services';
+import { useUserStore } from '../src/stores/userStore';
+import { analyticsService, appUsageService } from '../src/services';
 import { colors, spacing, typography, borderRadius } from '../src/constants/theme';
 
 // ============================================
@@ -32,9 +34,26 @@ export default function InsightsScreen() {
   } = usePhenotype();
 
   const redirectStats = useRedirectStore(s => s.getStats());
+  const { user } = useUserStore();
+  const [appUsageStats, setAppUsageStats] = useState<Array<{ packageName: string; totalTimeMs: number; label: string }>>([]);
 
   useEffect(() => {
     analyticsService.screen('Insights');
+
+    // Load app usage data
+    if (Platform.OS === 'android') {
+      appUsageService.getAppUsageStats(7).then(stats => {
+        const trackedApps = user?.preferences.trackedApps || [];
+        const mapped = stats.slice(0, 15).map(s => {
+          const tracked = trackedApps.find(a => a.packageName === s.packageName);
+          return {
+            ...s,
+            label: tracked?.label || s.packageName.split('.').pop() || s.packageName,
+          };
+        });
+        setAppUsageStats(mapped);
+      });
+    }
   }, []);
 
   const snap = todaySnapshot;
@@ -64,6 +83,38 @@ export default function InsightsScreen() {
             size="large"
           />
         </Card>
+
+        {/* App Usage (Android) */}
+        {appUsageStats.length > 0 && (
+          <InsightCard
+            title="App Usage (7 days)"
+            icon="time"
+            iconColor="#FF6F00"
+          >
+            {appUsageStats.map((app, i) => {
+              const hours = Math.floor(app.totalTimeMs / 3600000);
+              const mins = Math.floor((app.totalTimeMs % 3600000) / 60000);
+              const isTracked = user?.preferences.trackedApps.some(t => t.packageName === app.packageName);
+              return (
+                <View key={i} style={styles.appUsageRow}>
+                  <View style={styles.appUsageInfo}>
+                    <Text style={[styles.appUsageName, isTracked && styles.appUsageTracked]} numberOfLines={1}>
+                      {app.label}
+                    </Text>
+                    {isTracked && (
+                      <View style={styles.trackedBadge}>
+                        <Text style={styles.trackedBadgeText}>TRACKED</Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.appUsageTime}>
+                    {hours > 0 ? `${hours}h ${mins}m` : `${mins}m`}
+                  </Text>
+                </View>
+              );
+            })}
+          </InsightCard>
+        )}
 
         {/* Sleep */}
         <InsightCard
@@ -332,5 +383,44 @@ const styles = StyleSheet.create({
     fontSize: typography.sizes.sm,
     color: colors.textPrimary,
     textTransform: 'capitalize',
+  },
+  appUsageRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.divider,
+  },
+  appUsageInfo: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  appUsageName: {
+    fontSize: typography.sizes.sm,
+    color: colors.textPrimary,
+    maxWidth: '60%',
+  },
+  appUsageTracked: {
+    color: colors.warning,
+    fontWeight: typography.weights.semibold as any,
+  },
+  trackedBadge: {
+    backgroundColor: '#FFF3E0',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+    borderRadius: borderRadius.sm,
+  },
+  trackedBadgeText: {
+    fontSize: 10,
+    fontWeight: typography.weights.bold as any,
+    color: colors.warning,
+  },
+  appUsageTime: {
+    fontSize: typography.sizes.sm,
+    color: colors.textSecondary,
+    fontWeight: typography.weights.medium as any,
   },
 });

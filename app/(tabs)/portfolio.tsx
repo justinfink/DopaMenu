@@ -7,6 +7,8 @@ import {
   ScrollView,
   TouchableOpacity,
   TextInput,
+  Platform,
+  StatusBar as RNStatusBar,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -178,7 +180,7 @@ const styles = StyleSheet.create({
   },
   header: {
     marginBottom: spacing.md,
-    paddingTop: spacing.md,
+    paddingTop: Platform.OS === 'android' ? (RNStatusBar.currentHeight || 0) + spacing.sm : spacing.md,
   },
   title: {
     fontSize: typography.sizes.xxl,

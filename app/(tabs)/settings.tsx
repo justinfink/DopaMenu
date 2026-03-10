@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,8 @@ import {
   Switch,
   Alert,
   Platform,
+  StatusBar as RNStatusBar,
+  AppState,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -50,6 +52,23 @@ export default function SettingsScreen() {
   const { reset: resetRedirects, cooldownMinutes, setCooldownMinutes } = useRedirectStore();
 
   const [expandedSection, setExpandedSection] = useState<string | null>(null);
+  const [permStatus, setPermStatus] = useState({ usageAccess: false, overlay: false });
+
+  // Live permission status - re-checks when user returns from system settings
+  const refreshPermissions = useCallback(async () => {
+    if (Platform.OS !== 'android') return;
+    const status = await appUsageService.checkPermissionsStatus();
+    setPermStatus(status);
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    refreshPermissions();
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') refreshPermissions();
+    });
+    return () => subscription.remove();
+  }, [refreshPermissions]);
 
   if (!user) return null;
 
@@ -133,16 +152,15 @@ export default function SettingsScreen() {
     const newValue = !user.preferences.appMonitoringEnabled;
 
     if (newValue) {
-      // Check permission first
-      const { granted } = await appUsageService.checkPermission();
-      if (!granted) {
+      // Check permission first - use live status
+      if (!permStatus.usageAccess) {
         Alert.alert(
           'Permission Required',
-          'DopaMenu needs Usage Access permission to detect when you open certain apps. This lets us show you alternatives at the moment you need them most.',
+          'DopaMenu needs Usage Access permission to detect when you open certain apps. You\'ll be taken to settings - grant permission and come back.',
           [
             { text: 'Cancel', style: 'cancel' },
             {
-              text: 'Grant Permission',
+              text: 'Open Settings',
               onPress: async () => {
                 await appUsageService.requestPermission();
               },
@@ -185,13 +203,11 @@ export default function SettingsScreen() {
 
   const handleRedirectionToggle = async () => {
     if (!user.preferences.redirectionEnabled && Platform.OS === 'android') {
-      // Check overlay permission
-      const statuses = await permissionsService.checkAllPermissions();
-      const overlayStatus = statuses.find(s => s.type === 'overlay');
-      if (overlayStatus && !overlayStatus.granted) {
+      // Check overlay permission using live status
+      if (!permStatus.overlay) {
         Alert.alert(
           'Permission Required',
-          'DopaMenu needs "Display over other apps" permission to show redirect overlays.',
+          'DopaMenu needs "Display over other apps" permission to show the redirect screen. You\'ll be taken to settings - grant permission and come back.',
           [
             { text: 'Cancel', style: 'cancel' },
             { text: 'Open Settings', onPress: () => permissionsService.openOverlaySettings() },
@@ -640,29 +656,47 @@ export default function SettingsScreen() {
             onToggle={() => toggleSection('permissions')}
           >
             <Text style={styles.sectionDescription}>
-              Manage permissions DopaMenu needs to function
+              Manage permissions DopaMenu needs to function. Tap to open settings, then return here.
             </Text>
             <View style={styles.optionsList}>
-              <TouchableOpacity style={styles.optionItem} onPress={() => permissionsService.openUsageAccessSettings()}>
+              <TouchableOpacity
+                style={[styles.optionItem, permStatus.usageAccess && styles.optionItemGranted]}
+                onPress={() => permissionsService.openUsageAccessSettings()}
+              >
                 <View style={styles.optionContent}>
                   <Text style={styles.optionLabel}>Usage Access</Text>
-                  <Text style={styles.optionDescription}>Detect app launches</Text>
+                  <Text style={styles.optionDescription}>
+                    {permStatus.usageAccess ? 'Granted - app detection active' : 'Required to detect app launches'}
+                  </Text>
                 </View>
-                <Ionicons name="open-outline" size={20} color={colors.textTertiary} />
+                <Ionicons
+                  name={permStatus.usageAccess ? 'checkmark-circle' : 'open-outline'}
+                  size={20}
+                  color={permStatus.usageAccess ? colors.success : colors.primary}
+                />
               </TouchableOpacity>
-              <TouchableOpacity style={styles.optionItem} onPress={() => permissionsService.openOverlaySettings()}>
+              <TouchableOpacity
+                style={[styles.optionItem, permStatus.overlay && styles.optionItemGranted]}
+                onPress={() => permissionsService.openOverlaySettings()}
+              >
                 <View style={styles.optionContent}>
                   <Text style={styles.optionLabel}>Display Over Apps</Text>
-                  <Text style={styles.optionDescription}>Show redirect overlay</Text>
+                  <Text style={styles.optionDescription}>
+                    {permStatus.overlay ? 'Granted - redirect overlay active' : 'Required to show redirect screen'}
+                  </Text>
                 </View>
-                <Ionicons name="open-outline" size={20} color={colors.textTertiary} />
+                <Ionicons
+                  name={permStatus.overlay ? 'checkmark-circle' : 'open-outline'}
+                  size={20}
+                  color={permStatus.overlay ? colors.success : colors.primary}
+                />
               </TouchableOpacity>
               <TouchableOpacity style={styles.optionItem} onPress={() => permissionsService.openBatteryOptimizationSettings()}>
                 <View style={styles.optionContent}>
                   <Text style={styles.optionLabel}>Battery Optimization</Text>
-                  <Text style={styles.optionDescription}>Keep monitoring running</Text>
+                  <Text style={styles.optionDescription}>Disable to keep monitoring running in background</Text>
                 </View>
-                <Ionicons name="open-outline" size={20} color={colors.textTertiary} />
+                <Ionicons name="open-outline" size={20} color={colors.primary} />
               </TouchableOpacity>
             </View>
           </SettingsSection>
@@ -748,7 +782,7 @@ const styles = StyleSheet.create({
   },
   header: {
     marginBottom: spacing.lg,
-    paddingTop: spacing.md,
+    paddingTop: Platform.OS === 'android' ? (RNStatusBar.currentHeight || 0) + spacing.sm : spacing.md,
   },
   title: {
     fontSize: typography.sizes.xxl,
@@ -845,6 +879,10 @@ const styles = StyleSheet.create({
   optionItemSelected: {
     borderColor: colors.primary,
     backgroundColor: colors.primaryFaded,
+  },
+  optionItemGranted: {
+    borderColor: colors.success,
+    backgroundColor: '#F0F9F4',
   },
   optionContent: {
     flex: 1,

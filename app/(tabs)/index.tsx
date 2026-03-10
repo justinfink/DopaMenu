@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -7,6 +7,9 @@ import {
   ScrollView,
   TouchableOpacity,
   RefreshControl,
+  Platform,
+  AppState,
+  StatusBar as RNStatusBar,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -18,7 +21,8 @@ import { usePhenotypeStore } from '../../src/stores/phenotypeStore';
 import { useRedirectStore } from '../../src/stores/redirectStore';
 import { simulateSituation, generateIntervention } from '../../src/engine/InterventionEngine';
 import { getGreeting, getTimeBucket } from '../../src/utils/helpers';
-import { analyticsService, AnalyticsEvents } from '../../src/services';
+import { analyticsService, AnalyticsEvents, appUsageService } from '../../src/services';
+import { permissionsService } from '../../src/services/permissions';
 import { colors, spacing, borderRadius, typography, shadows } from '../../src/constants/theme';
 
 // ============================================
@@ -26,13 +30,27 @@ import { colors, spacing, borderRadius, typography, shadows } from '../../src/co
 // Main hub for the app
 // ============================================
 
+interface PermissionState {
+  usageAccess: boolean;
+  overlay: boolean;
+  checked: boolean;
+}
+
+interface AppUsageStat {
+  packageName: string;
+  totalTimeMs: number;
+  label?: string;
+}
+
 export default function DashboardScreen() {
-  const { user } = useUserStore();
+  const { user, updatePreferences } = useUserStore();
   const { showIntervention, totalInterventions, acceptedCount } = useInterventionStore();
   const { getTodayPortfolio } = usePortfolioStore();
   const { getWellbeingScore, todaySnapshot, refreshTodaySnapshot } = usePhenotypeStore();
   const { getStats: getRedirectStats } = useRedirectStore();
   const [refreshing, setRefreshing] = useState(false);
+  const [permissions, setPermissions] = useState<PermissionState>({ usageAccess: false, overlay: false, checked: false });
+  const [todayUsage, setTodayUsage] = useState<AppUsageStat[]>([]);
 
   const portfolio = getTodayPortfolio();
   const completedCategories = portfolio.categories.filter((c) => c.completed).length;
@@ -45,6 +63,43 @@ export default function DashboardScreen() {
 
   const timeBucket = getTimeBucket();
   const greeting = getGreeting();
+
+  // Check permissions and load usage data
+  const checkSetupStatus = useCallback(async () => {
+    if (Platform.OS !== 'android') return;
+
+    const status = await appUsageService.checkPermissionsStatus();
+    setPermissions({ ...status, checked: true });
+
+    // Load today's app usage if we have permission
+    if (status.usageAccess) {
+      const stats = await appUsageService.getAppUsageStats(1);
+      // Map package names to friendly labels
+      const trackedApps = user?.preferences.trackedApps || [];
+      const mapped = stats.slice(0, 5).map(s => {
+        const tracked = trackedApps.find(a => a.packageName === s.packageName);
+        return {
+          ...s,
+          label: tracked?.label || s.packageName.split('.').pop() || s.packageName,
+        };
+      });
+      setTodayUsage(mapped);
+    }
+  }, [user?.preferences.trackedApps]);
+
+  // Re-check when app comes to foreground (user may have granted permissions)
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        checkSetupStatus();
+      }
+    });
+
+    checkSetupStatus();
+    return () => subscription.remove();
+  }, [checkSetupStatus]);
 
   // Track screen view
   useEffect(() => {
@@ -144,6 +199,115 @@ export default function DashboardScreen() {
           </TouchableOpacity>
         </View>
 
+        {/* Setup Banner - shown when core features need permissions */}
+        {Platform.OS === 'android' && permissions.checked && (
+          !user?.preferences.appMonitoringEnabled ||
+          !user?.preferences.redirectionEnabled ||
+          !permissions.usageAccess ||
+          !permissions.overlay
+        ) && (
+          <Card style={styles.setupCard}>
+            <View style={styles.setupHeader}>
+              <Ionicons name="shield-checkmark" size={22} color={colors.primary} />
+              <Text style={styles.setupTitle}>Complete Setup</Text>
+            </View>
+            <Text style={styles.setupDescription}>
+              Enable these features for DopaMenu to catch you before you scroll
+            </Text>
+            <View style={styles.setupItems}>
+              {/* Usage Access */}
+              <TouchableOpacity
+                style={[styles.setupItem, permissions.usageAccess && styles.setupItemDone]}
+                onPress={async () => {
+                  if (!permissions.usageAccess) {
+                    await appUsageService.requestPermission();
+                  } else if (!user?.preferences.appMonitoringEnabled) {
+                    updatePreferences({ appMonitoringEnabled: true });
+                    const enabledApps = user?.preferences.trackedApps.filter(a => a.enabled) || [];
+                    await appUsageService.startMonitoring(enabledApps);
+                  }
+                }}
+              >
+                <Ionicons
+                  name={permissions.usageAccess ? 'checkmark-circle' : 'ellipse-outline'}
+                  size={20}
+                  color={permissions.usageAccess ? colors.success : colors.textTertiary}
+                />
+                <View style={styles.setupItemText}>
+                  <Text style={styles.setupItemTitle}>
+                    {permissions.usageAccess ? 'Usage Access Granted' : 'Grant Usage Access'}
+                  </Text>
+                  <Text style={styles.setupItemDesc}>Detect when you open apps</Text>
+                </View>
+                {!permissions.usageAccess && (
+                  <Ionicons name="open-outline" size={16} color={colors.primary} />
+                )}
+              </TouchableOpacity>
+
+              {/* Overlay Permission */}
+              <TouchableOpacity
+                style={[styles.setupItem, permissions.overlay && styles.setupItemDone]}
+                onPress={async () => {
+                  if (!permissions.overlay) {
+                    await permissionsService.openOverlaySettings();
+                  } else if (!user?.preferences.redirectionEnabled) {
+                    updatePreferences({ redirectionEnabled: true });
+                  }
+                }}
+              >
+                <Ionicons
+                  name={permissions.overlay ? 'checkmark-circle' : 'ellipse-outline'}
+                  size={20}
+                  color={permissions.overlay ? colors.success : colors.textTertiary}
+                />
+                <View style={styles.setupItemText}>
+                  <Text style={styles.setupItemTitle}>
+                    {permissions.overlay ? 'Overlay Permission Granted' : 'Display Over Apps'}
+                  </Text>
+                  <Text style={styles.setupItemDesc}>Show redirect when you open a timewaster</Text>
+                </View>
+                {!permissions.overlay && (
+                  <Ionicons name="open-outline" size={16} color={colors.primary} />
+                )}
+              </TouchableOpacity>
+
+              {/* App Monitoring Toggle */}
+              {permissions.usageAccess && !user?.preferences.appMonitoringEnabled && (
+                <TouchableOpacity
+                  style={styles.setupItem}
+                  onPress={async () => {
+                    updatePreferences({ appMonitoringEnabled: true });
+                    const enabledApps = user?.preferences.trackedApps.filter(a => a.enabled) || [];
+                    await appUsageService.startMonitoring(enabledApps);
+                  }}
+                >
+                  <Ionicons name="ellipse-outline" size={20} color={colors.textTertiary} />
+                  <View style={styles.setupItemText}>
+                    <Text style={styles.setupItemTitle}>Enable App Detection</Text>
+                    <Text style={styles.setupItemDesc}>Start monitoring tracked apps</Text>
+                  </View>
+                  <Ionicons name="toggle-outline" size={20} color={colors.primary} />
+                </TouchableOpacity>
+              )}
+
+              {/* Redirection Toggle */}
+              {permissions.overlay && !user?.preferences.redirectionEnabled && (
+                <TouchableOpacity
+                  style={styles.setupItem}
+                  onPress={() => updatePreferences({ redirectionEnabled: true })}
+                >
+                  <Ionicons name="ellipse-outline" size={20} color={colors.textTertiary} />
+                  <View style={styles.setupItemText}>
+                    <Text style={styles.setupItemTitle}>Enable Redirection</Text>
+                    <Text style={styles.setupItemDesc}>Intercept timewaster app launches</Text>
+                  </View>
+                  <Ionicons name="toggle-outline" size={20} color={colors.primary} />
+                </TouchableOpacity>
+              )}
+            </View>
+          </Card>
+        )}
+
         {/* Main Urge Button */}
         <Card style={styles.urgeCard}>
           <UrgeButton
@@ -191,6 +355,41 @@ export default function DashboardScreen() {
                 <Text style={styles.statLabel}>Saved</Text>
               </View>
             </View>
+          </Card>
+        )}
+
+        {/* App Usage Today */}
+        {todayUsage.length > 0 && (
+          <Card style={styles.usageCard}>
+            <View style={styles.progressHeader}>
+              <Text style={styles.sectionTitle}>Today's App Usage</Text>
+              <TouchableOpacity onPress={() => router.push('/insights')}>
+                <Text style={styles.seeAllLink}>Details</Text>
+              </TouchableOpacity>
+            </View>
+            {todayUsage.map((app, i) => (
+              <View key={i} style={styles.usageRow}>
+                <Text style={styles.usageAppName} numberOfLines={1}>{app.label}</Text>
+                <View style={styles.usageBarContainer}>
+                  <View
+                    style={[
+                      styles.usageBar,
+                      {
+                        width: `${Math.min(100, (app.totalTimeMs / (todayUsage[0]?.totalTimeMs || 1)) * 100)}%`,
+                        backgroundColor: user?.preferences.trackedApps.some(t => t.packageName === app.packageName)
+                          ? colors.warning
+                          : colors.primaryLight,
+                      },
+                    ]}
+                  />
+                </View>
+                <Text style={styles.usageTime}>
+                  {app.totalTimeMs >= 3600000
+                    ? `${Math.floor(app.totalTimeMs / 3600000)}h ${Math.floor((app.totalTimeMs % 3600000) / 60000)}m`
+                    : `${Math.floor(app.totalTimeMs / 60000)}m`}
+                </Text>
+              </View>
+            ))}
           </Card>
         )}
 
@@ -340,7 +539,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: spacing.lg,
-    paddingTop: spacing.md,
+    paddingTop: Platform.OS === 'android' ? (RNStatusBar.currentHeight || 0) + spacing.sm : spacing.md,
   },
   greeting: {
     fontSize: typography.sizes.xxl,
@@ -513,6 +712,89 @@ const styles = StyleSheet.create({
   demoSubtitle: {
     fontSize: typography.sizes.sm,
     color: colors.textSecondary,
+  },
+  setupCard: {
+    marginBottom: spacing.lg,
+    borderWidth: 2,
+    borderColor: colors.primary,
+  },
+  setupHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.xs,
+  },
+  setupTitle: {
+    fontSize: typography.sizes.lg,
+    fontWeight: typography.weights.bold,
+    color: colors.textPrimary,
+  },
+  setupDescription: {
+    fontSize: typography.sizes.sm,
+    color: colors.textSecondary,
+    marginBottom: spacing.md,
+  },
+  setupItems: {
+    gap: spacing.sm,
+  },
+  setupItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    padding: spacing.md,
+    backgroundColor: colors.background,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  setupItemDone: {
+    borderColor: colors.success,
+    backgroundColor: '#F0F9F4',
+  },
+  setupItemText: {
+    flex: 1,
+  },
+  setupItemTitle: {
+    fontSize: typography.sizes.sm,
+    fontWeight: typography.weights.semibold,
+    color: colors.textPrimary,
+  },
+  setupItemDesc: {
+    fontSize: typography.sizes.xs,
+    color: colors.textSecondary,
+    marginTop: 1,
+  },
+  usageCard: {
+    marginBottom: spacing.md,
+  },
+  usageRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: spacing.sm,
+    gap: spacing.sm,
+  },
+  usageAppName: {
+    fontSize: typography.sizes.sm,
+    color: colors.textPrimary,
+    width: 80,
+    fontWeight: typography.weights.medium,
+  },
+  usageBarContainer: {
+    flex: 1,
+    height: 8,
+    backgroundColor: colors.background,
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  usageBar: {
+    height: 8,
+    borderRadius: 4,
+  },
+  usageTime: {
+    fontSize: typography.sizes.xs,
+    color: colors.textSecondary,
+    width: 50,
+    textAlign: 'right',
   },
   anchorsSection: {
     marginTop: spacing.sm,

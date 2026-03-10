@@ -34,6 +34,16 @@ export interface UsageStatsPermission {
   canRequest: boolean;
 }
 
+export interface PendingRedirect {
+  packageName: string;
+  timestamp: number;
+}
+
+export interface PermissionsStatus {
+  usageAccess: boolean;
+  overlay: boolean;
+}
+
 // Native module interface (Android only)
 interface AppUsageModule {
   checkPermission(): Promise<boolean>;
@@ -41,6 +51,12 @@ interface AppUsageModule {
   getRecentApps(minutes: number): Promise<string[]>;
   startMonitoring(packageNames: string[]): Promise<void>;
   stopMonitoring(): Promise<void>;
+  getPendingRedirect(): Promise<PendingRedirect | null>;
+  clearPendingRedirect(): Promise<void>;
+  checkPermissionsStatus(): Promise<PermissionsStatus>;
+  canDrawOverlays(): Promise<boolean>;
+  requestOverlayPermission(): Promise<void>;
+  getAppUsageStats(days: number): Promise<Array<{ packageName: string; totalTimeMs: number; lastUsed: number }>>;
 }
 
 // Get native module if available
@@ -213,6 +229,60 @@ export const appUsageService = {
    */
   isNativeModuleAvailable(): boolean {
     return NativeAppUsage !== null;
+  },
+
+  /**
+   * Check for a pending redirect from the background service (Android only)
+   * The service stores detected app launches in SharedPreferences
+   * so the JS layer can pick them up when the app comes to foreground
+   */
+  async getPendingRedirect(): Promise<PendingRedirect | null> {
+    if (!this.isSupported() || !NativeAppUsage) return null;
+    try {
+      return await NativeAppUsage.getPendingRedirect();
+    } catch {
+      return null;
+    }
+  },
+
+  /**
+   * Clear the pending redirect after it has been handled
+   */
+  async clearPendingRedirect(): Promise<void> {
+    if (!this.isSupported() || !NativeAppUsage) return;
+    try {
+      await NativeAppUsage.clearPendingRedirect();
+    } catch {
+      // ignore
+    }
+  },
+
+  /**
+   * Check all Android permission statuses at once (Android only)
+   * Returns real-time permission state without leaving the app
+   */
+  async checkPermissionsStatus(): Promise<PermissionsStatus> {
+    if (!this.isSupported() || !NativeAppUsage) {
+      return { usageAccess: false, overlay: false };
+    }
+    try {
+      return await NativeAppUsage.checkPermissionsStatus();
+    } catch {
+      return { usageAccess: false, overlay: false };
+    }
+  },
+
+  /**
+   * Get app usage statistics for the last N days (Android only)
+   * Returns sorted list of apps with time spent
+   */
+  async getAppUsageStats(days: number = 1): Promise<Array<{ packageName: string; totalTimeMs: number; lastUsed: number }>> {
+    if (!this.isSupported() || !NativeAppUsage) return [];
+    try {
+      return await NativeAppUsage.getAppUsageStats(days);
+    } catch {
+      return [];
+    }
   },
 };
 

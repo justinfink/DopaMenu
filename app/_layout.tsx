@@ -1,5 +1,5 @@
-import { useEffect, useState, useRef } from 'react';
-import { Platform } from 'react-native';
+import { useEffect, useState, useRef, useCallback } from 'react';
+import { Platform, AppState, AppStateStatus } from 'react-native';
 import { Stack, router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
@@ -43,6 +43,51 @@ export default function RootLayout() {
     prepare();
   }, []);
 
+  // Check for pending redirects from the background service
+  const checkPendingRedirect = useCallback(async () => {
+    if (Platform.OS !== 'android' || !user) return;
+    if (!user.preferences.appMonitoringEnabled || !user.preferences.redirectionEnabled) return;
+
+    const pending = await appUsageService.getPendingRedirect();
+    if (!pending) return;
+
+    // Clear it immediately so we don't re-process
+    await appUsageService.clearPendingRedirect();
+
+    // Check cooldown
+    const { isInCooldown } = useRedirectStore.getState();
+    if (isInCooldown()) return;
+
+    // Find the app label from tracked apps
+    const trackedApp = user.preferences.trackedApps.find(
+      a => a.packageName === pending.packageName
+    );
+    const sourceAppName = trackedApp?.label || pending.packageName.split('.').pop() || 'App';
+
+    // Generate intervention and show redirect
+    const situation = createRedirectSituation(pending.packageName);
+    const decision = generateIntervention(situation, user, undefined, undefined, sourceAppName);
+    startRedirect(pending.packageName, sourceAppName, decision);
+    showIntervention(decision, situation);
+    router.push('/redirect');
+  }, [user]);
+
+  // Listen for app coming to foreground to check for pending redirects
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !user) return;
+
+    const subscription = AppState.addEventListener('change', (nextState: AppStateStatus) => {
+      if (nextState === 'active') {
+        checkPendingRedirect();
+      }
+    });
+
+    // Also check immediately on mount
+    checkPendingRedirect();
+
+    return () => subscription.remove();
+  }, [checkPendingRedirect]);
+
   // Set up notifications and monitoring after user is ready
   useEffect(() => {
     if (!user) return;
@@ -85,6 +130,24 @@ export default function RootLayout() {
 
     setupServices();
 
+    // Listen for native app launch events (backup to SharedPreferences polling)
+    let unsubscribeAppLaunch: (() => void) | null = null;
+    if (Platform.OS === 'android' && currentUser.preferences.appMonitoringEnabled) {
+      unsubscribeAppLaunch = appUsageService.onAppLaunched((event) => {
+        if (!currentUser.preferences.redirectionEnabled) return;
+
+        const { isInCooldown } = useRedirectStore.getState();
+        if (isInCooldown()) return;
+
+        const sourceAppName = event.label || event.packageName.split('.').pop() || 'App';
+        const situation = createRedirectSituation(event.packageName);
+        const decision = generateIntervention(situation, currentUser, undefined, undefined, sourceAppName);
+        startRedirect(event.packageName, sourceAppName, decision);
+        showIntervention(decision, situation);
+        router.push('/redirect');
+      });
+    }
+
     // Listen for notification taps
     responseListener.current = notificationService.addResponseListener((response) => {
       const data = response.notification.request.content.data;
@@ -125,6 +188,9 @@ export default function RootLayout() {
       }
       if (responseListener.current) {
         responseListener.current.remove();
+      }
+      if (unsubscribeAppLaunch) {
+        unsubscribeAppLaunch();
       }
       phenotypeCollector.stop();
     };
