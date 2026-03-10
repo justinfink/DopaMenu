@@ -12,7 +12,22 @@ import { notificationService, analyticsService, AnalyticsEvents, appUsageService
 import { phenotypeCollector } from '../src/services/phenotypeCollector';
 import { simulateSituation, generateIntervention, createRedirectSituation } from '../src/engine/InterventionEngine';
 import { DEFAULT_PHENOTYPE_SETTINGS } from '../src/models';
+import { APP_CATALOG } from '../src/constants/appCatalog';
 import { colors } from '../src/constants/theme';
+
+// Social/messaging categories for phenotype tracking
+const SOCIAL_CATEGORIES = new Set(['social_media', 'communication']);
+const MESSAGING_CATEGORIES = new Set(['communication']);
+
+function isSocialApp(packageName: string): boolean {
+  const app = APP_CATALOG.find(a => a.packageName === packageName);
+  return app ? SOCIAL_CATEGORIES.has(app.category) : false;
+}
+
+function isMessagingApp(packageName: string): boolean {
+  const app = APP_CATALOG.find(a => a.packageName === packageName);
+  return app ? MESSAGING_CATEGORIES.has(app.category) : false;
+}
 
 // Prevent splash screen from auto-hiding
 SplashScreen.preventAutoHideAsync();
@@ -54,6 +69,12 @@ export default function RootLayout() {
     // Clear it immediately so we don't re-process
     await appUsageService.clearPendingRedirect();
 
+    // Record app switch in phenotype collector
+    phenotypeCollector.recordAppSwitch();
+    if (isSocialApp(pending.packageName)) {
+      phenotypeCollector.recordSocialAppUse(1, isMessagingApp(pending.packageName));
+    }
+
     // Check cooldown
     const { isInCooldown } = useRedirectStore.getState();
     if (isInCooldown()) return;
@@ -72,21 +93,34 @@ export default function RootLayout() {
     router.push('/redirect');
   }, [user]);
 
-  // Listen for app coming to foreground to check for pending redirects
+  // Listen for app coming to foreground to check for pending redirects + phenotype tracking
   useEffect(() => {
-    if (Platform.OS !== 'android' || !user) return;
+    if (!user) return;
 
     const subscription = AppState.addEventListener('change', (nextState: AppStateStatus) => {
-      if (nextState === 'active') {
+      // Track screen on/off for phenotype
+      if (user.preferences.phenotypeCollectionEnabled) {
+        if (nextState === 'active') {
+          phenotypeCollector.recordScreenOn();
+          phenotypeCollector.recordUnlock();
+        } else if (nextState === 'background' || nextState === 'inactive') {
+          phenotypeCollector.recordScreenOff();
+        }
+      }
+
+      // Check pending redirects (Android only)
+      if (Platform.OS === 'android' && nextState === 'active') {
         checkPendingRedirect();
       }
     });
 
     // Also check immediately on mount
-    checkPendingRedirect();
+    if (Platform.OS === 'android') {
+      checkPendingRedirect();
+    }
 
     return () => subscription.remove();
-  }, [checkPendingRedirect]);
+  }, [checkPendingRedirect, user?.preferences.phenotypeCollectionEnabled]);
 
   // Set up notifications and monitoring after user is ready
   useEffect(() => {
@@ -134,6 +168,12 @@ export default function RootLayout() {
     let unsubscribeAppLaunch: (() => void) | null = null;
     if (Platform.OS === 'android' && currentUser.preferences.appMonitoringEnabled) {
       unsubscribeAppLaunch = appUsageService.onAppLaunched((event) => {
+        // Record in phenotype collector
+        phenotypeCollector.recordAppSwitch();
+        if (isSocialApp(event.packageName)) {
+          phenotypeCollector.recordSocialAppUse(1, isMessagingApp(event.packageName));
+        }
+
         const { isInCooldown } = useRedirectStore.getState();
         if (isInCooldown()) return;
 
@@ -154,6 +194,11 @@ export default function RootLayout() {
       analyticsService.track(AnalyticsEvents.NOTIFICATION_TAPPED, {
         type: String(data?.type || 'unknown'),
       });
+
+      // Record in phenotype collector (approximate response time)
+      if (currentUser.preferences.phenotypeCollectionEnabled) {
+        phenotypeCollector.recordNotificationResponse(5000); // Estimate 5s response
+      }
 
       // Handle different notification types
       if (data?.type === 'redirect' && data?.sourceApp) {
@@ -176,8 +221,11 @@ export default function RootLayout() {
 
     // Listen for foreground notifications
     notificationListener.current = notificationService.addReceivedListener((notification) => {
-      // Log that notification was received while app is in foreground
       console.log('[Notification] Received in foreground:', notification.request.content.title);
+      // Track in phenotype collector
+      if (currentUser.preferences.phenotypeCollectionEnabled) {
+        phenotypeCollector.recordNotificationReceived();
+      }
     });
 
     return () => {
