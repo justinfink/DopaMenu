@@ -180,7 +180,12 @@ class PermissionsService {
       } catch {
         // Fallback
       }
-      await Linking.openSettings();
+      // Fallback: open Accessibility settings page directly via intent
+      try {
+        await Linking.sendIntent('android.settings.ACCESSIBILITY_SETTINGS');
+      } catch {
+        await Linking.openSettings();
+      }
     }
   }
 
@@ -195,7 +200,12 @@ class PermissionsService {
       } catch {
         // Fallback
       }
-      await Linking.openSettings();
+      // Fallback: open Usage Access settings page directly via intent
+      try {
+        await Linking.sendIntent('android.settings.USAGE_ACCESS_SETTINGS');
+      } catch {
+        await Linking.openSettings();
+      }
     }
   }
 
@@ -210,8 +220,12 @@ class PermissionsService {
       } catch {
         // Fallback
       }
-      // Fallback to general settings
-      await Linking.sendIntent('android.settings.MANAGE_OVERLAY_PERMISSION');
+      // Fallback: open overlay settings via intent
+      try {
+        await Linking.sendIntent('android.settings.action.MANAGE_OVERLAY_PERMISSION');
+      } catch {
+        await Linking.openSettings();
+      }
     }
   }
 

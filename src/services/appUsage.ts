@@ -295,11 +295,20 @@ export const appUsageService = {
    * Open Android Accessibility Settings so user can enable the service
    */
   async openAccessibilitySettings(): Promise<void> {
-    if (!this.isSupported() || !NativeAppUsage) return;
+    if (!this.isSupported()) return;
     try {
-      await NativeAppUsage.openAccessibilitySettings();
+      if (NativeAppUsage) {
+        await NativeAppUsage.openAccessibilitySettings();
+      } else {
+        // Fallback when native module is unavailable
+        await Linking.sendIntent('android.settings.ACCESSIBILITY_SETTINGS');
+      }
     } catch {
-      await Linking.openSettings();
+      try {
+        await Linking.sendIntent('android.settings.ACCESSIBILITY_SETTINGS');
+      } catch {
+        await Linking.openSettings();
+      }
     }
   },
 

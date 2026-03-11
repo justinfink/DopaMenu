@@ -1009,24 +1009,62 @@ class AppUsageMonitorService : Service() {
 // Register the native module in MainApplication
 function withAppUsageMainApplication(config) {
   return withMainApplication(config, async (config) => {
-    const contents = config.modResults.contents;
+    let contents = config.modResults.contents;
 
-    // Add import if not present
+    // Add import and package registration if not present
     if (!contents.includes('DopaMenuAppUsagePackage')) {
       const packageName = config.android?.package || 'com.dopamenu.app';
-
-      // Add import
       const importStatement = `import ${packageName}.DopaMenuAppUsagePackage`;
-      config.modResults.contents = contents.replace(
-        /(import com\.facebook\.react\.ReactPackage)/,
-        `$1\n${importStatement}`
-      );
 
-      // Add to packages list
-      config.modResults.contents = config.modResults.contents.replace(
-        /(packages\.add\(MainReactPackage\(\)\))/,
-        `$1\n            packages.add(DopaMenuAppUsagePackage())`
-      );
+      // Strategy 1: Modern Expo (SDK 50+) — MainApplication.kt
+      // Template has: import com.facebook.react.ReactPackage
+      //               val packages = PackageList(this).packages
+      // Strategy 2: Older Expo — MainApplication.java
+      //               packages.add(new MainReactPackage())
+
+      // Add import — try after existing ReactPackage import, fallback to after package declaration
+      if (contents.includes('import com.facebook.react.ReactPackage')) {
+        contents = contents.replace(
+          /(import com\.facebook\.react\.ReactPackage)/,
+          `$1\n${importStatement}`
+        );
+      } else {
+        // Fallback: add after package declaration
+        contents = contents.replace(
+          /(package [^\n]+)/,
+          `$1\n\n${importStatement}`
+        );
+      }
+
+      // Add to packages list — try modern Kotlin pattern first, then legacy Java pattern
+      if (contents.includes('PackageList(this).packages')) {
+        // Modern Expo SDK 50+: val packages = PackageList(this).packages
+        // We need to add after this line
+        contents = contents.replace(
+          /(val packages = PackageList\(this\)\.packages)/,
+          `$1\n            packages.add(DopaMenuAppUsagePackage())`
+        );
+      } else if (contents.includes('PackageList(this).getPackages()')) {
+        // Some versions use getPackages() method
+        contents = contents.replace(
+          /(PackageList\(this\)\.getPackages\(\))/,
+          `$1.apply { add(DopaMenuAppUsagePackage()) }`
+        );
+      } else if (contents.match(/packages\.add\(.*MainReactPackage/)) {
+        // Legacy: packages.add(new MainReactPackage()) or packages.add(MainReactPackage())
+        contents = contents.replace(
+          /(packages\.add\((?:new )?MainReactPackage\(\)\))/,
+          `$1\n            packages.add(DopaMenuAppUsagePackage())`
+        );
+      } else {
+        // Last resort: find getPackages() method and add before return
+        contents = contents.replace(
+          /(return packages)/,
+          `packages.add(DopaMenuAppUsagePackage())\n            $1`
+        );
+      }
+
+      config.modResults.contents = contents;
     }
 
     return config;
