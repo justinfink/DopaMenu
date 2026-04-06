@@ -77,6 +77,44 @@ function withAppUsageManifest(config) {
       });
     }
 
+    // Add AccessibilityService declaration
+    const hasAccessibilityService = application.service?.some(
+      (svc) => svc.$['android:name'] === '.DopaMenuAccessibilityService'
+    );
+
+    if (!hasAccessibilityService) {
+      application.service.push({
+        $: {
+          'android:name': '.DopaMenuAccessibilityService',
+          'android:permission': 'android.permission.BIND_ACCESSIBILITY_SERVICE',
+          'android:exported': 'true',
+        },
+        'intent-filter': [{ action: [{ $: { 'android:name': 'android.accessibilityservice.AccessibilityService' } }] }],
+        'meta-data': [{
+          $: {
+            'android:name': 'android.accessibilityservice',
+            'android:resource': '@xml/dopamenu_accessibility_config',
+          },
+        }],
+      });
+    }
+
+    // Add <queries> for package visibility on Android 11+ (without this,
+    // UsageStats and PackageManager calls may silently skip tracked apps)
+    if (!manifest.queries) manifest.queries = [{}];
+    const queries = manifest.queries[0];
+    if (!queries.package) queries.package = [];
+    const trackedPkgs = [
+      'com.instagram.android', 'com.twitter.android', 'com.zhiliaoapp.musically',
+      'com.facebook.katana', 'com.reddit.frontpage', 'com.snapchat.android',
+      'com.google.android.youtube', 'com.netflix.mediaclient',
+    ];
+    for (const pkg of trackedPkgs) {
+      if (!queries.package.some((p) => p.$?.['android:name'] === pkg)) {
+        queries.package.push({ $: { 'android:name': pkg } });
+      }
+    }
+
     // Add tools namespace if not present
     if (!manifest.$['xmlns:tools']) {
       manifest.$['xmlns:tools'] = 'http://schemas.android.com/tools';
@@ -119,9 +157,23 @@ function withAppUsageNativeCode(config) {
       const packageCode = getPackageCode(packageName);
       fs.writeFileSync(path.join(javaDir, 'DopaMenuAppUsagePackage.kt'), packageCode);
 
-      // Write the service
+      // Write the monitoring service
       const serviceCode = getServiceCode(packageName);
       fs.writeFileSync(path.join(javaDir, 'AppUsageMonitorService.kt'), serviceCode);
+
+      // Write the AccessibilityService
+      const accessibilityCode = getAccessibilityServiceCode(packageName);
+      fs.writeFileSync(path.join(javaDir, 'DopaMenuAccessibilityService.kt'), accessibilityCode);
+
+      // Write the AccessibilityService XML config into res/xml/
+      const resXmlDir = path.join(projectRoot, 'android', 'app', 'src', 'main', 'res', 'xml');
+      if (!fs.existsSync(resXmlDir)) {
+        fs.mkdirSync(resXmlDir, { recursive: true });
+      }
+      fs.writeFileSync(
+        path.join(resXmlDir, 'dopamenu_accessibility_config.xml'),
+        getAccessibilityConfigXml()
+      );
 
       return config;
     },
@@ -131,6 +183,7 @@ function withAppUsageNativeCode(config) {
 function getModuleCode(packageName) {
   return `package ${packageName}
 
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.AppOpsManager
 import android.app.usage.UsageStats
 import android.app.usage.UsageStatsManager
@@ -139,6 +192,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.Process
 import android.provider.Settings
+import android.view.accessibility.AccessibilityManager
 import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
 
@@ -147,7 +201,19 @@ class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
 
     companion object {
         const val NAME = "DopaMenuAppUsage"
-        private var monitoringPackages: List<String> = emptyList()
+        // Public so DopaMenuAccessibilityService can read/write these
+        var monitoringPackages: List<String> = emptyList()
+        var instance: DopaMenuAppUsageModule? = null
+
+        /** Called by DopaMenuAccessibilityService on the main thread */
+        fun onAccessibilityAppDetected(packageName: String) {
+            if (!monitoringPackages.contains(packageName)) return
+            instance?.emitAppLaunched(packageName, packageName)
+        }
+    }
+
+    init {
+        instance = this
     }
 
     override fun getName(): String = NAME
@@ -255,6 +321,30 @@ class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
         return mode == AppOpsManager.MODE_ALLOWED
     }
 
+    @ReactMethod
+    fun checkAccessibilityPermission(promise: Promise) {
+        try {
+            val am = reactApplicationContext.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
+            val enabled = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
+            val granted = enabled.any { it.resolveInfo.serviceInfo.packageName == reactApplicationContext.packageName }
+            promise.resolve(granted)
+        } catch (e: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun requestAccessibilityPermission(promise: Promise) {
+        try {
+            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            reactApplicationContext.startActivity(intent)
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
+
     fun emitAppLaunched(packageName: String, label: String) {
         val params = Arguments.createMap().apply {
             putString("packageName", packageName)
@@ -342,10 +432,21 @@ class AppUsageMonitorService : Service() {
         startForeground(NOTIFICATION_ID, createNotification())
         startMonitoring()
 
-        return START_STICKY
+        // Android 14+ ignores START_STICKY for foreground services.
+        // AccessibilityService keeps detection alive if this service is killed.
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            START_NOT_STICKY
+        } else {
+            START_STICKY
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    // Android 15: called when the 6-hour specialUse FGS time limit is reached
+    override fun onTimeout(startId: Int) {
+        stopSelf(startId)
+    }
 
     override fun onDestroy() {
         super.onDestroy()
@@ -415,7 +516,10 @@ class AppUsageMonitorService : Service() {
 
         while (usageEvents.hasNextEvent()) {
             usageEvents.getNextEvent(event)
-            if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
+            // Check both MOVE_TO_FOREGROUND (app-level, all Android) and
+            // ACTIVITY_RESUMED (activity-level, Android 10+) for maximum coverage
+            if (event.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND ||
+                event.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
                 lastResumedPackage = event.packageName
             }
         }
@@ -473,6 +577,45 @@ class AppUsageMonitorService : Service() {
         notificationManager.notify(System.currentTimeMillis().toInt(), notification)
     }
 }
+`;
+}
+
+function getAccessibilityServiceCode(packageName) {
+  return `package ${packageName}
+
+import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
+import android.view.accessibility.AccessibilityEvent
+
+class DopaMenuAccessibilityService : AccessibilityService() {
+
+    override fun onServiceConnected() {
+        serviceInfo = AccessibilityServiceInfo().apply {
+            eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+            feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
+            notificationTimeout = 100
+        }
+    }
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+        val packageName = event.packageName?.toString() ?: return
+        // Forward to the native module — it checks monitoringPackages and emits to JS
+        DopaMenuAppUsageModule.onAccessibilityAppDetected(packageName)
+    }
+
+    override fun onInterrupt() {}
+}
+`;
+}
+
+function getAccessibilityConfigXml() {
+  return `<?xml version="1.0" encoding="utf-8"?>
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:notificationTimeout="100"
+    android:canRetrieveWindowContent="false" />
 `;
 }
 

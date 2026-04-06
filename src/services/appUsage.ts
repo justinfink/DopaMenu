@@ -41,6 +41,8 @@ interface AppUsageModule {
   getRecentApps(minutes: number): Promise<string[]>;
   startMonitoring(packageNames: string[]): Promise<void>;
   stopMonitoring(): Promise<void>;
+  checkAccessibilityPermission(): Promise<boolean>;
+  requestAccessibilityPermission(): Promise<void>;
 }
 
 // Get native module if available
@@ -213,6 +215,33 @@ export const appUsageService = {
    */
   isNativeModuleAvailable(): boolean {
     return NativeAppUsage !== null;
+  },
+
+  /**
+   * Check if the Accessibility Service is enabled for DopaMenu (Android only).
+   * When granted, app launches are detected in real-time (~100ms) via
+   * TYPE_WINDOW_STATE_CHANGED events — no polling delay.
+   */
+  async checkAccessibilityPermission(): Promise<boolean> {
+    if (!this.isSupported() || !NativeAppUsage) return false;
+    try {
+      return await NativeAppUsage.checkAccessibilityPermission();
+    } catch {
+      return false;
+    }
+  },
+
+  /**
+   * Open the Android Accessibility settings screen so the user can enable
+   * DopaMenu's accessibility service (Android only).
+   */
+  async requestAccessibilityPermission(): Promise<void> {
+    if (!this.isSupported() || !NativeAppUsage) return;
+    try {
+      await NativeAppUsage.requestAccessibilityPermission();
+    } catch (error) {
+      console.error('[AppUsage] Failed to open accessibility settings:', error);
+    }
   },
 };
 

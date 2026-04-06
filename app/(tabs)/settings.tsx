@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -46,6 +46,23 @@ export default function SettingsScreen() {
   const { reset: resetPortfolio } = usePortfolioStore();
 
   const [expandedSection, setExpandedSection] = useState<string | null>(null);
+  const [accessibilityGranted, setAccessibilityGranted] = useState(false);
+
+  // Check accessibility permission on mount and when screen is focused
+  useEffect(() => {
+    appUsageService.checkAccessibilityPermission().then(setAccessibilityGranted);
+  }, []);
+
+  const handleAccessibilityPermission = async () => {
+    await appUsageService.requestAccessibilityPermission();
+    const subscription = AppState.addEventListener('change', async (nextState) => {
+      if (nextState === 'active') {
+        subscription.remove();
+        const granted = await appUsageService.checkAccessibilityPermission();
+        setAccessibilityGranted(granted);
+      }
+    });
+  };
 
   if (!user) return null;
 
@@ -476,6 +493,37 @@ export default function SettingsScreen() {
                     </Text>
                   </View>
                 </View>
+              </Card>
+            )}
+            {/* Detection method card — shown when native module is available */}
+            {appUsageService.isNativeModuleAvailable() && (
+              <Card style={[styles.toggleCard, { marginBottom: spacing.md, marginTop: spacing.md }]}>
+                <View style={styles.infoContent}>
+                  <Ionicons
+                    name={accessibilityGranted ? 'flash' : 'flash-outline'}
+                    size={20}
+                    color={accessibilityGranted ? colors.primary : colors.textSecondary}
+                  />
+                  <View style={styles.infoText}>
+                    <Text style={styles.toggleTitle}>
+                      {accessibilityGranted ? 'Instant detection active' : 'Enable instant detection'}
+                    </Text>
+                    <Text style={styles.toggleDescription}>
+                      {accessibilityGranted
+                        ? 'Accessibility service is on — catches Instagram and all apps in real-time'
+                        : 'Accessibility permission catches app opens instantly. Without it, detection may lag or miss fast launches like Instagram.'}
+                    </Text>
+                  </View>
+                </View>
+                {!accessibilityGranted && (
+                  <TouchableOpacity
+                    style={[styles.dangerButton, { borderColor: colors.primary, marginTop: spacing.sm }]}
+                    onPress={handleAccessibilityPermission}
+                  >
+                    <Ionicons name="settings-outline" size={18} color={colors.primary} />
+                    <Text style={[styles.dangerButtonText, { color: colors.primary }]}>Grant Accessibility</Text>
+                  </TouchableOpacity>
+                )}
               </Card>
             )}
             <Card style={[styles.toggleCard, { marginBottom: spacing.md }]}>
