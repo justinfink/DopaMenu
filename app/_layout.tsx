@@ -19,6 +19,7 @@ export default function RootLayout() {
   const { showIntervention } = useInterventionStore();
   const notificationListener = useRef<Notifications.Subscription | null>(null);
   const responseListener = useRef<Notifications.Subscription | null>(null);
+  const appLaunchUnsubscribe = useRef<(() => void) | null>(null);
 
   // Initialize app
   useEffect(() => {
@@ -73,7 +74,23 @@ export default function RootLayout() {
 
     setupServices();
 
+    // Listen for app launch events via NativeEventEmitter — fires when DopaMenu is in the foreground
+    if (Platform.OS === 'android' && currentUser.preferences.appMonitoringEnabled) {
+      appLaunchUnsubscribe.current = appUsageService.onAppLaunched((event) => {
+        console.log('[AppUsage] Detected app launch:', event.label);
+        analyticsService.track(AnalyticsEvents.INTERVENTION_SHOWN, {
+          trigger: 'app_detection',
+          detectedApp: event.label,
+        });
+        const situation = simulateSituation();
+        const decision = generateIntervention(situation, currentUser);
+        showIntervention(decision, situation);
+        router.push('/intervention');
+      });
+    }
+
     // Handle deep links from the native AppUsageMonitorService (dopamenu://intervention?trigger=app_intercept)
+    // Fires when the app is backgrounded or closed and the notification is tapped
     const handleDeepLink = ({ url }: { url: string }) => {
       if (url.startsWith('dopamenu://intervention')) {
         const situation = simulateSituation();
@@ -117,6 +134,10 @@ export default function RootLayout() {
 
     return () => {
       deepLinkSub.remove();
+      if (appLaunchUnsubscribe.current) {
+        appLaunchUnsubscribe.current();
+        appLaunchUnsubscribe.current = null;
+      }
       if (notificationListener.current) {
         notificationListener.current.remove();
       }
