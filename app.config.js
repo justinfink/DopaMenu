@@ -25,6 +25,7 @@ export default {
       infoPlist: {
         NSCalendarsUsageDescription:
           'DopaMenu uses your calendar to understand your schedule and suggest better alternatives at the right moments.',
+        ITSAppUsesNonExemptEncryption: false,
       },
     },
     android: {
