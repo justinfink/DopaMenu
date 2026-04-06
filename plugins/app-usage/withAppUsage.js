@@ -488,16 +488,26 @@ function withAppUsageMainApplication(config) {
         `$1\n${importStatement}`
       );
 
-      // Inject package registration — handle both new-arch (PackageList) and old-arch (MainReactPackage) patterns
-      if (config.modResults.contents.includes('PackageList(this).packages')) {
-        // New arch: val packages = PackageList(this).packages
-        config.modResults.contents = config.modResults.contents.replace(
+      // Inject package registration — handle all three known MainApplication.kt patterns:
+      //   1. New arch (Expo SDK 51+): PackageList(this).packages.apply { ... }
+      //   2. New arch (Expo SDK 49-50): val packages = PackageList(this).packages
+      //   3. Old arch: packages.add(MainReactPackage())
+      const c = config.modResults.contents;
+      if (c.includes('PackageList(this).packages.apply')) {
+        // Pattern 1: inject inside the apply block
+        config.modResults.contents = c.replace(
+          /(PackageList\(this\)\.packages\.apply\s*\{)/,
+          `$1\n              add(DopaMenuAppUsagePackage())`
+        );
+      } else if (c.includes('PackageList(this).packages')) {
+        // Pattern 2: val packages = PackageList(this).packages
+        config.modResults.contents = c.replace(
           /(val packages = PackageList\(this\)\.packages)/,
           `$1\n            packages.add(DopaMenuAppUsagePackage())`
         );
       } else {
-        // Old arch: packages.add(MainReactPackage())
-        config.modResults.contents = config.modResults.contents.replace(
+        // Pattern 3: old arch
+        config.modResults.contents = c.replace(
           /(packages\.add\(MainReactPackage\(\)\))/,
           `$1\n            packages.add(DopaMenuAppUsagePackage())`
         );
