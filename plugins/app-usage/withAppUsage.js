@@ -307,6 +307,7 @@ import android.app.*
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -427,10 +428,14 @@ class AppUsageMonitorService : Service() {
     }
 
     private fun onTrackedAppLaunched(packageName: String) {
-        // Send a notification to interrupt the user
-        val intent = packageManager.getLaunchIntentForPackage(this.packageName)
+        // Use a deep link so the RN Linking handler can route to the intervention screen
+        val deepLink = Uri.parse("dopamenu://intervention?trigger=app_intercept&package=\${packageName}")
+        val intent = Intent(Intent.ACTION_VIEW, deepLink).apply {
+            setPackage(this@AppUsageMonitorService.packageName)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        }
         val pendingIntent = PendingIntent.getActivity(
-            this, 0, intent,
+            this, System.currentTimeMillis().toInt(), intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
@@ -440,6 +445,16 @@ class AppUsageMonitorService : Service() {
             "Pause. What would feel good instead?",
             "Mindful moment: you have other options.",
         )
+
+        // Ensure the app_detection channel exists
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                "app_detection",
+                "App Detection",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply { setShowBadge(false) }
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        }
 
         val notification = NotificationCompat.Builder(this, "app_detection")
             .setContentTitle("DopaMenu")
@@ -473,11 +488,20 @@ function withAppUsageMainApplication(config) {
         `$1\n${importStatement}`
       );
 
-      // Add to packages list
-      config.modResults.contents = config.modResults.contents.replace(
-        /(packages\.add\(MainReactPackage\(\)\))/,
-        `$1\n            packages.add(DopaMenuAppUsagePackage())`
-      );
+      // Inject package registration — handle both new-arch (PackageList) and old-arch (MainReactPackage) patterns
+      if (config.modResults.contents.includes('PackageList(this).packages')) {
+        // New arch: val packages = PackageList(this).packages
+        config.modResults.contents = config.modResults.contents.replace(
+          /(val packages = PackageList\(this\)\.packages)/,
+          `$1\n            packages.add(DopaMenuAppUsagePackage())`
+        );
+      } else {
+        // Old arch: packages.add(MainReactPackage())
+        config.modResults.contents = config.modResults.contents.replace(
+          /(packages\.add\(MainReactPackage\(\)\))/,
+          `$1\n            packages.add(DopaMenuAppUsagePackage())`
+        );
+      }
     }
 
     return config;

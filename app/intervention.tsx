@@ -8,6 +8,7 @@ import {
   Animated,
   Dimensions,
   ScrollView,
+  Linking,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -76,7 +77,13 @@ export default function InterventionScreen() {
   const handleAccept = (intervention?: InterventionCandidate) => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     recordOutcome('accepted');
+    const target = intervention?.launchTarget ?? displayIntervention.launchTarget;
     handleClose();
+    if (target) {
+      Linking.openURL(target).catch(() => {
+        // Silently ignore — app may not be installed
+      });
+    }
   };
 
   const handleDismiss = () => {

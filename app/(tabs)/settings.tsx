@@ -141,6 +141,18 @@ export default function SettingsScreen() {
               text: 'Grant Permission',
               onPress: async () => {
                 await appUsageService.requestPermission();
+                // When the user comes back from OS settings, re-check and enable if granted
+                const subscription = AppState.addEventListener('change', async (nextState) => {
+                  if (nextState === 'active') {
+                    subscription.remove();
+                    const { granted: nowGranted } = await appUsageService.checkPermission();
+                    if (nowGranted) {
+                      const enabledApps = user.preferences.trackedApps.filter(a => a.enabled);
+                      await appUsageService.startMonitoring(enabledApps);
+                      updatePreferences({ appMonitoringEnabled: true });
+                    }
+                  }
+                });
               },
             },
           ]
@@ -148,7 +160,7 @@ export default function SettingsScreen() {
         return;
       }
 
-      // Start monitoring
+      // Permission already granted — start monitoring immediately
       const enabledApps = user.preferences.trackedApps.filter(a => a.enabled);
       await appUsageService.startMonitoring(enabledApps);
     } else {
@@ -452,6 +464,20 @@ export default function SettingsScreen() {
             <Text style={styles.sectionDescription}>
               Get an intervention when you open distracting apps
             </Text>
+            {!appUsageService.isNativeModuleAvailable() && (
+              <Card style={[styles.infoCard, { marginTop: spacing.md, backgroundColor: colors.error + '18' }]}>
+                <View style={styles.infoContent}>
+                  <Ionicons name="warning-outline" size={20} color={colors.error} />
+                  <View style={styles.infoText}>
+                    <Text style={[styles.infoTitle, { color: colors.error }]}>Native module not loaded</Text>
+                    <Text style={styles.infoDescription}>
+                      App detection requires a native build. Run{' '}
+                      <Text style={{ fontFamily: 'monospace' }}>npx expo run:android</Text> to enable this feature.
+                    </Text>
+                  </View>
+                </View>
+              </Card>
+            )}
             <Card style={[styles.toggleCard, { marginBottom: spacing.md }]}>
               <View style={styles.toggleRow}>
                 <View style={styles.toggleContent}>

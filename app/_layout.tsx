@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
-import { Platform } from 'react-native';
+import { Platform, Linking } from 'react-native';
 import { Stack, router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
@@ -73,6 +73,23 @@ export default function RootLayout() {
 
     setupServices();
 
+    // Handle deep links from the native AppUsageMonitorService (dopamenu://intervention?trigger=app_intercept)
+    const handleDeepLink = ({ url }: { url: string }) => {
+      if (url.startsWith('dopamenu://intervention')) {
+        const situation = simulateSituation();
+        const decision = generateIntervention(situation, currentUser);
+        showIntervention(decision, situation);
+        router.push('/intervention');
+      }
+    };
+
+    const deepLinkSub = Linking.addEventListener('url', handleDeepLink);
+
+    // Check if the app was launched via the deep link while it was closed
+    Linking.getInitialURL().then((url) => {
+      if (url) handleDeepLink({ url });
+    });
+
     // Listen for notification taps
     responseListener.current = notificationService.addResponseListener((response) => {
       const data = response.notification.request.content.data;
@@ -99,6 +116,7 @@ export default function RootLayout() {
     });
 
     return () => {
+      deepLinkSub.remove();
       if (notificationListener.current) {
         notificationListener.current.remove();
       }
