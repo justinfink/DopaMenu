@@ -304,6 +304,7 @@ function getServiceCode(packageName) {
   return `package ${packageName}
 
 import android.app.*
+import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
@@ -402,28 +403,31 @@ class AppUsageMonitorService : Service() {
     private fun checkForegroundApp() {
         val usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         val endTime = System.currentTimeMillis()
-        val startTime = endTime - 5000 // Last 5 seconds
+        // Overlap by 500ms to avoid gaps between polling cycles
+        val startTime = endTime - CHECK_INTERVAL - 500
 
-        val stats = usageStatsManager.queryUsageStats(
-            UsageStatsManager.INTERVAL_BEST,
-            startTime,
-            endTime
-        )
+        // UsageEvents.queryEvents + ACTIVITY_RESUMED is the correct API for
+        // foreground detection — queryUsageStats only returns aggregate stats
+        // and misses brief app launches like Instagram's splash-to-feed sequence.
+        val usageEvents = usageStatsManager.queryEvents(startTime, endTime)
+        val event = UsageEvents.Event()
+        var lastResumedPackage: String? = null
 
-        val currentForeground = stats
-            ?.filter { it.lastTimeUsed > startTime }
-            ?.maxByOrNull { it.lastTimeUsed }
-            ?.packageName
+        while (usageEvents.hasNextEvent()) {
+            usageEvents.getNextEvent(event)
+            if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
+                lastResumedPackage = event.packageName
+            }
+        }
 
-        if (currentForeground != null &&
-            currentForeground != lastForegroundApp &&
-            monitoringPackages.contains(currentForeground)) {
+        if (lastResumedPackage != null &&
+            lastResumedPackage != lastForegroundApp &&
+            monitoringPackages.contains(lastResumedPackage)) {
 
-            // Detected a tracked app launch!
-            lastForegroundApp = currentForeground
-            onTrackedAppLaunched(currentForeground)
-        } else if (currentForeground != null) {
-            lastForegroundApp = currentForeground
+            lastForegroundApp = lastResumedPackage
+            onTrackedAppLaunched(lastResumedPackage)
+        } else if (lastResumedPackage != null) {
+            lastForegroundApp = lastResumedPackage
         }
     }
 

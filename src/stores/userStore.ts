@@ -69,7 +69,24 @@ export const useUserStore = create<UserState>()(
       initializeUser: (timezone: string) => {
         const existing = get().user;
         if (existing) {
-          set({ isLoading: false });
+          // Merge any new default trackedApps that aren't in the stored prefs.
+          // Covers users who installed before the current defaults were written.
+          const existingPackages = new Set(existing.preferences.trackedApps.map(a => a.packageName));
+          const newApps = defaultPreferences.trackedApps.filter(a => !existingPackages.has(a.packageName));
+          if (newApps.length > 0) {
+            set({
+              user: {
+                ...existing,
+                preferences: {
+                  ...existing.preferences,
+                  trackedApps: [...existing.preferences.trackedApps, ...newApps],
+                },
+              },
+              isLoading: false,
+            });
+          } else {
+            set({ isLoading: false });
+          }
           return;
         }
 
