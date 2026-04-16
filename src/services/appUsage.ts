@@ -43,6 +43,7 @@ interface AppUsageModule {
   stopMonitoring(): Promise<void>;
   checkAccessibilityPermission(): Promise<boolean>;
   requestAccessibilityPermission(): Promise<void>;
+  openAppInfo(): Promise<void>;
 }
 
 // Get native module if available
@@ -241,6 +242,26 @@ export const appUsageService = {
       await NativeAppUsage.requestAccessibilityPermission();
     } catch (error) {
       console.error('[AppUsage] Failed to open accessibility settings:', error);
+    }
+  },
+
+  /**
+   * Open DopaMenu's own App Info screen (Android only).
+   * Required for Android 13+ sideloaded APKs where Usage Access and
+   * Accessibility show "Controlled by Restricted Setting" until the user
+   * taps ⋮ → "Allow restricted settings" from this page.
+   */
+  async openAppInfo(): Promise<void> {
+    if (!this.isSupported() || !NativeAppUsage) {
+      // Best-effort fallback for when the native module isn't registered.
+      await Linking.openSettings();
+      return;
+    }
+    try {
+      await NativeAppUsage.openAppInfo();
+    } catch (error) {
+      console.error('[AppUsage] Failed to open app info:', error);
+      await Linking.openSettings();
     }
   },
 };

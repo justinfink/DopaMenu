@@ -189,6 +189,7 @@ import android.app.usage.UsageStats
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Process
 import android.provider.Settings
@@ -337,6 +338,23 @@ class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
     fun requestAccessibilityPermission(promise: Promise) {
         try {
             val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            reactApplicationContext.startActivity(intent)
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
+
+    // Opens DopaMenu's own App Info screen. This is where Android 13+ surfaces
+    // the ⋮ menu with "Allow restricted settings", which is required before
+    // sideloaded apps can receive Usage Access or Accessibility permissions.
+    @ReactMethod
+    fun openAppInfo(promise: Promise) {
+        try {
+            val pkg = reactApplicationContext.packageName
+            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+            intent.data = Uri.parse("package:\$pkg")
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             reactApplicationContext.startActivity(intent)
             promise.resolve(null)

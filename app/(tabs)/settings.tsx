@@ -57,15 +57,51 @@ export default function SettingsScreen() {
     appUsageService.checkAccessibilityPermission().then(setAccessibilityGranted);
   }, []);
 
+  // Shown when the user returns from OS settings and the permission is STILL
+  // not granted — the most common cause on Android 13+ sideloaded APKs is that
+  // the toggle was disabled due to "Restricted Settings". Walk them through
+  // the App Info → ⋮ → Allow restricted settings flow, which unblocks both
+  // Usage Access and Accessibility.
+  const showRestrictedSettingsFallback = (permissionName: 'Usage Access' | 'Accessibility') => {
+    Alert.alert(
+      `Still need ${permissionName}?`,
+      `If the toggle looked disabled or showed "Controlled by Restricted Setting", Android is blocking it because DopaMenu was installed outside the Play Store.\n\nTo fix it:\n1. Tap "Open App Info" below\n2. Tap ⋮ (top right) → "Allow restricted settings"\n3. Then go to Permissions → ${permissionName} and turn it on`,
+      [
+        { text: 'Not now', style: 'cancel' },
+        {
+          text: 'Open App Info',
+          onPress: () => {
+            appUsageService.openAppInfo();
+          },
+        },
+      ]
+    );
+  };
+
   const handleAccessibilityPermission = async () => {
-    await appUsageService.requestAccessibilityPermission();
-    const subscription = AppState.addEventListener('change', async (nextState) => {
-      if (nextState === 'active') {
-        subscription.remove();
-        const granted = await appUsageService.checkAccessibilityPermission();
-        setAccessibilityGranted(granted);
-      }
-    });
+    Alert.alert(
+      'Enable Accessibility',
+      'This lets DopaMenu detect apps like Instagram the instant they open.\n\nOn the next screen, find DopaMenu and turn on its accessibility service.\n\nIf the toggle is disabled ("Controlled by Restricted Setting"), come back here — we\'ll help you unblock it.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Continue',
+          onPress: async () => {
+            await appUsageService.requestAccessibilityPermission();
+            const subscription = AppState.addEventListener('change', async (nextState) => {
+              if (nextState === 'active') {
+                subscription.remove();
+                const granted = await appUsageService.checkAccessibilityPermission();
+                setAccessibilityGranted(granted);
+                if (!granted) {
+                  showRestrictedSettingsFallback('Accessibility');
+                }
+              }
+            });
+          },
+        },
+      ]
+    );
   };
 
   if (!user) return null;
@@ -155,7 +191,7 @@ export default function SettingsScreen() {
       if (!granted) {
         Alert.alert(
           'Permission Required',
-          'DopaMenu needs Usage Access permission to detect when you open certain apps. This lets us show you alternatives at the moment you need them most.',
+          'DopaMenu needs Usage Access permission to detect when you open certain apps. This lets us show you alternatives at the moment you need them most.\n\nOn the next screen, find DopaMenu and turn on its usage access.\n\nIf the toggle is disabled ("Controlled by Restricted Setting"), come back here — we\'ll help you unblock it.',
           [
             { text: 'Cancel', style: 'cancel' },
             {
@@ -171,6 +207,8 @@ export default function SettingsScreen() {
                       const enabledApps = user.preferences.trackedApps.filter(a => a.enabled);
                       await appUsageService.startMonitoring(enabledApps);
                       updatePreferences({ appMonitoringEnabled: true });
+                    } else {
+                      showRestrictedSettingsFallback('Usage Access');
                     }
                   }
                 });
