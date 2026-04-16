@@ -554,12 +554,33 @@ class AppUsageMonitorService : Service() {
     }
 
     private fun onTrackedAppLaunched(packageName: String) {
-        // Use a deep link so the RN Linking handler can route to the intervention screen
+        // Deep link into the intervention screen
         val deepLink = Uri.parse("dopamenu://intervention?trigger=app_intercept&package=\${packageName}")
         val intent = Intent(Intent.ACTION_VIEW, deepLink).apply {
             setPackage(this@AppUsageMonitorService.packageName)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP
+            )
         }
+
+        // Overlay-style intercept: bring DopaMenu to the foreground directly.
+        // A running foreground service is permitted to launch activities even
+        // from background context on modern Android. If the platform blocks
+        // this (some OEMs/versions), the notification fallback below still
+        // lets the user tap in.
+        var launchedDirectly = false
+        try {
+            startActivity(intent)
+            launchedDirectly = true
+        } catch (_: Exception) {
+            // Fall through to notification
+        }
+
+        // Always also post a high-priority notification as a fallback/backup
+        // path. On devices where the direct launch succeeded this is a
+        // redundant but harmless reminder the user can swipe away.
         val pendingIntent = PendingIntent.getActivity(
             this, System.currentTimeMillis().toInt(), intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
@@ -572,7 +593,6 @@ class AppUsageMonitorService : Service() {
             "Mindful moment: you have other options.",
         )
 
-        // Ensure the app_detection channel exists
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 "app_detection",
@@ -582,17 +602,19 @@ class AppUsageMonitorService : Service() {
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
 
-        val notification = NotificationCompat.Builder(this, "app_detection")
+        // If we already launched DopaMenu directly, make the fallback
+        // notification lower priority so it doesn't also heads-up.
+        val notif = NotificationCompat.Builder(this, "app_detection")
             .setContentTitle("DopaMenu")
             .setContentText(messages.random())
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .setContentIntent(pendingIntent)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(if (launchedDirectly) NotificationCompat.PRIORITY_LOW else NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .build()
 
-        val notificationManager = getSystemService(NotificationManager::class.java)
-        notificationManager.notify(System.currentTimeMillis().toInt(), notification)
+        getSystemService(NotificationManager::class.java)
+            .notify(System.currentTimeMillis().toInt(), notif)
     }
 }
 `;
@@ -603,9 +625,21 @@ function getAccessibilityServiceCode(packageName) {
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.Intent
+import android.net.Uri
 import android.view.accessibility.AccessibilityEvent
 
+// AccessibilityService is the overlay mechanism. When it detects a tracked app
+// opening, it immediately brings DopaMenu to the foreground via startActivity
+// — which AccessibilityServices are explicitly permitted to do even from the
+// background on Android 10+. This is what makes the "intercept" feel instant
+// and overlay-like instead of a notification the user has to tap.
 class DopaMenuAccessibilityService : AccessibilityService() {
+
+    // Throttle foreground-intent spam. A single window-state change can fire
+    // the event multiple times as activities transition.
+    private var lastInterceptedPackage: String? = null
+    private var lastInterceptTime: Long = 0L
 
     override fun onServiceConnected() {
         serviceInfo = AccessibilityServiceInfo().apply {
@@ -617,9 +651,42 @@ class DopaMenuAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
-        val packageName = event.packageName?.toString() ?: return
-        // Forward to the native module — it checks monitoringPackages and emits to JS
-        DopaMenuAppUsageModule.onAccessibilityAppDetected(packageName)
+        val pkg = event.packageName?.toString() ?: return
+
+        // Only intercept apps the user is tracking
+        if (!DopaMenuAppUsageModule.monitoringPackages.contains(pkg)) return
+
+        // Ignore repeats within 5s for the same package — stops us from
+        // launching DopaMenu over itself on activity transitions.
+        val now = System.currentTimeMillis()
+        if (pkg == lastInterceptedPackage && now - lastInterceptTime < 5000L) return
+        lastInterceptedPackage = pkg
+        lastInterceptTime = now
+
+        // Forward to the module so JS can record analytics if foregrounded
+        DopaMenuAppUsageModule.onAccessibilityAppDetected(pkg)
+
+        // Bring DopaMenu to the foreground — this is the overlay behavior.
+        bringDopaMenuForward(pkg)
+    }
+
+    private fun bringDopaMenuForward(sourcePackage: String) {
+        try {
+            val deepLink = Uri.parse("dopamenu://intervention?trigger=app_intercept&package=\$sourcePackage")
+            val intent = Intent(Intent.ACTION_VIEW, deepLink).apply {
+                setPackage(applicationContext.packageName)
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP
+                )
+            }
+            startActivity(intent)
+        } catch (_: Exception) {
+            // If startActivity is blocked for any reason (rare for an
+            // AccessibilityService), the UsageStats polling path still fires
+            // a notification as a fallback.
+        }
     }
 
     override fun onInterrupt() {}
