@@ -9,6 +9,7 @@ import {
   Dimensions,
   ScrollView,
   Linking,
+  Platform,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -25,6 +26,70 @@ import { colors, spacing, borderRadius, typography, shadows } from '../src/const
 // ============================================
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
+
+// ============================================
+// Platform-aware launch
+// DopaMenu is fundamentally an app router — if an intervention points at a
+// native app, we try to open that app first, and only fall back to a web URL
+// if the app isn't installed.
+//
+// Android: uses intent:// URL with S.browser_fallback_url so the OS handles
+// "app installed? → open app. not installed? → open fallback URL" without us
+// needing to probe for the app.
+//
+// iOS: tries the URL scheme first via canOpenURL (requires LSApplicationQueriesSchemes
+// in Info.plist for schemes to be detectable — universal HTTPS links always
+// work), then falls back to launchTarget.
+// ============================================
+
+function buildAndroidIntentUrl(packageName: string, fallbackUrl?: string): string {
+  const parts = [`package=${packageName}`, 'end'];
+  // Most app launchers respond to a MAIN/LAUNCHER intent with just the package
+  // set. Including S.browser_fallback_url lets the OS route to the web if the
+  // app isn't installed.
+  const base = 'intent://#Intent;';
+  const fallback = fallbackUrl
+    ? `S.browser_fallback_url=${encodeURIComponent(fallbackUrl)};`
+    : '';
+  return `${base}${parts[0]};${fallback}${parts[1]}`;
+}
+
+async function launchIntervention(intervention: InterventionCandidate): Promise<void> {
+  const { launchAppPackage, launchIosScheme, launchTarget } = intervention;
+
+  // Nothing to launch — off-phone activity
+  if (!launchAppPackage && !launchIosScheme && !launchTarget) return;
+
+  if (Platform.OS === 'android' && launchAppPackage) {
+    const intentUrl = buildAndroidIntentUrl(launchAppPackage, launchTarget);
+    try {
+      await Linking.openURL(intentUrl);
+      return;
+    } catch {
+      // Fall through to web fallback below
+    }
+  }
+
+  if (Platform.OS === 'ios' && launchIosScheme) {
+    try {
+      const supported = await Linking.canOpenURL(launchIosScheme);
+      if (supported) {
+        await Linking.openURL(launchIosScheme);
+        return;
+      }
+    } catch {
+      // Fall through to web fallback
+    }
+  }
+
+  if (launchTarget) {
+    try {
+      await Linking.openURL(launchTarget);
+    } catch {
+      // Silently ignore — nothing to route to
+    }
+  }
+}
 
 export default function InterventionScreen() {
   const { activeIntervention, recordOutcome, clearActiveIntervention } = useInterventionStore();
@@ -77,13 +142,9 @@ export default function InterventionScreen() {
   const handleAccept = (intervention?: InterventionCandidate) => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     recordOutcome('accepted');
-    const target = intervention?.launchTarget ?? displayIntervention.launchTarget;
+    const chosen = intervention ?? displayIntervention;
     handleClose();
-    if (target) {
-      Linking.openURL(target).catch(() => {
-        // Silently ignore — app may not be installed
-      });
-    }
+    launchIntervention(chosen);
   };
 
   const handleDismiss = () => {

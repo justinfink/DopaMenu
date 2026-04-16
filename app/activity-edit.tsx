@@ -18,6 +18,7 @@ import { Button, Card } from '../src/components';
 import { useCustomInterventionsStore } from '../src/stores/customInterventionsStore';
 import { useUserStore } from '../src/stores/userStore';
 import { EffortLevel, InterventionSurface } from '../src/models';
+import { KNOWN_APPS, KNOWN_APPS_BY_ID, KnownApp, CATEGORY_LABELS } from '../src/constants/knownApps';
 import { colors, spacing, borderRadius, typography } from '../src/constants/theme';
 
 // ============================================
@@ -77,10 +78,53 @@ export default function ActivityEditScreen() {
 
   const [label, setLabel] = useState(existing?.label ?? '');
   const [description, setDescription] = useState(existing?.description ?? '');
-  const [launchTarget, setLaunchTarget] = useState(existing?.launchTarget ?? '');
   const [effort, setEffort] = useState<EffortLevel>(existing?.requiredEffort ?? 'low');
   const [surface, setSurface] = useState<InterventionSurface>(existing?.surface ?? 'on_phone');
   const [icon, setIcon] = useState<string>(existing?.icon ?? 'sparkles');
+
+  // Launch target: three modes so users can route to an app, a URL, or nothing
+  // (for off-phone activities). Derive initial mode from existing fields.
+  type LaunchMode = 'app' | 'url' | 'none';
+  const deriveInitialMode = (): LaunchMode => {
+    if (existing?.launchAppPackage || existing?.launchIosScheme) return 'app';
+    if (existing?.launchTarget) return 'url';
+    return existing ? 'none' : 'app';
+  };
+  const deriveInitialAppId = (): string | null => {
+    if (!existing?.launchAppPackage) return null;
+    const match = KNOWN_APPS.find((a) => a.androidPackage === existing.launchAppPackage);
+    return match?.id ?? null;
+  };
+  const [launchMode, setLaunchMode] = useState<LaunchMode>(deriveInitialMode());
+  const [selectedAppId, setSelectedAppId] = useState<string | null>(deriveInitialAppId());
+  const [launchTarget, setLaunchTarget] = useState(
+    existing && !existing.launchAppPackage ? existing.launchTarget ?? '' : ''
+  );
+
+  // Auto-fill icon and name hints when the user picks a known app and hasn't
+  // customized those fields yet. We only overwrite when fields are empty or
+  // clearly untouched so we don't clobber deliberate edits.
+  const handleSelectApp = (app: KnownApp) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setSelectedAppId(app.id);
+    if (!label.trim()) {
+      setLabel(app.tagline ? `${app.tagline} on ${app.label}` : `Open ${app.label}`);
+    }
+    // Only overwrite icon if it's still the default 'sparkles'
+    if (icon === 'sparkles' || icon === '') {
+      setIcon(app.icon);
+    }
+  };
+
+  // Group known apps by category for the picker
+  const appsByCategory = useMemo(() => {
+    const groups: Record<string, KnownApp[]> = {};
+    for (const app of KNOWN_APPS) {
+      if (!groups[app.category]) groups[app.category] = [];
+      groups[app.category].push(app);
+    }
+    return groups;
+  }, []);
 
   // Per-trigger pin state: which tracked apps have this activity pinned?
   const initialPinnedApps = useMemo(() => {
@@ -112,12 +156,34 @@ export default function ActivityEditScreen() {
       return;
     }
 
+    // Resolve launch fields from the selected mode. "app" uses the known app
+    // catalog so we get package + scheme + fallback URL together. "url" uses
+    // whatever raw URL the user typed. "none" clears them all (off-phone).
+    let resolvedTarget: string | undefined;
+    let resolvedPackage: string | undefined;
+    let resolvedIos: string | undefined;
+    if (launchMode === 'app' && selectedAppId) {
+      const app = KNOWN_APPS_BY_ID[selectedAppId];
+      if (app) {
+        resolvedPackage = app.androidPackage;
+        resolvedIos = app.iosScheme;
+        resolvedTarget = app.fallbackUrl;
+      }
+    } else if (launchMode === 'app' && !selectedAppId) {
+      Alert.alert('Pick an app', 'Select one of the apps below or switch to "Enter URL".');
+      return;
+    } else if (launchMode === 'url') {
+      resolvedTarget = launchTarget.trim() || undefined;
+    }
+
     let savedId: string;
     if (isEditing && existing) {
       updateIntervention(existing.id, {
         label: trimmedLabel,
         description: description.trim() || undefined,
-        launchTarget: launchTarget.trim() || undefined,
+        launchTarget: resolvedTarget,
+        launchAppPackage: resolvedPackage,
+        launchIosScheme: resolvedIos,
         requiredEffort: effort,
         surface,
         icon,
@@ -127,7 +193,9 @@ export default function ActivityEditScreen() {
       const created = addIntervention({
         label: trimmedLabel,
         description: description.trim() || undefined,
-        launchTarget: launchTarget.trim() || undefined,
+        launchTarget: resolvedTarget,
+        launchAppPackage: resolvedPackage,
+        launchIosScheme: resolvedIos,
         requiredEffort: effort,
         surface,
         icon,
@@ -236,21 +304,96 @@ export default function ActivityEditScreen() {
             multiline
           />
 
-          {/* Launch target (URL / deep link) */}
-          <Text style={styles.fieldLabel}>Open URL or app link (optional)</Text>
-          <TextInput
-            style={styles.input}
-            value={launchTarget}
-            onChangeText={setLaunchTarget}
-            placeholder="https://www.chess.com/puzzles"
-            placeholderTextColor={colors.textTertiary}
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="url"
-          />
-          <Text style={styles.helper}>
-            Tapping "I'll do this" opens this link. Leave blank for off-phone activities.
-          </Text>
+          {/* Launch mode: Pick an app / Enter URL / Nothing */}
+          <Text style={styles.fieldLabel}>When I tap "I'll do this"...</Text>
+          <View style={styles.surfaceRow}>
+            {(['app', 'url', 'none'] as const).map((mode) => {
+              const selected = launchMode === mode;
+              const label =
+                mode === 'app' ? 'Open in app' : mode === 'url' ? 'Open URL' : 'Nothing';
+              return (
+                <TouchableOpacity
+                  key={mode}
+                  style={[styles.surfaceChip, selected && styles.surfaceChipSelected]}
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    setLaunchMode(mode);
+                  }}
+                >
+                  <Text style={[styles.surfaceText, selected && styles.surfaceTextSelected]}>
+                    {label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          {/* Mode: Open in app → show the catalog grouped by category */}
+          {launchMode === 'app' && (
+            <>
+              <Text style={styles.helper}>
+                Picks the native app if installed, and falls back to the web if not.
+              </Text>
+              {Object.entries(appsByCategory).map(([category, apps]) => (
+                <View key={category} style={styles.categoryBlock}>
+                  <Text style={styles.categoryLabel}>
+                    {CATEGORY_LABELS[category as KnownApp['category']]}
+                  </Text>
+                  <View style={styles.appGrid}>
+                    {apps.map((app) => {
+                      const selected = selectedAppId === app.id;
+                      return (
+                        <TouchableOpacity
+                          key={app.id}
+                          style={[styles.appChip, selected && styles.appChipSelected]}
+                          onPress={() => handleSelectApp(app)}
+                        >
+                          <Ionicons
+                            name={app.icon as any}
+                            size={20}
+                            color={selected ? colors.textInverse : colors.primary}
+                          />
+                          <Text
+                            style={[
+                              styles.appChipLabel,
+                              selected && styles.appChipLabelSelected,
+                            ]}
+                          >
+                            {app.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </View>
+              ))}
+            </>
+          )}
+
+          {/* Mode: Enter URL → raw text field */}
+          {launchMode === 'url' && (
+            <>
+              <TextInput
+                style={[styles.input, { marginTop: spacing.sm }]}
+                value={launchTarget}
+                onChangeText={setLaunchTarget}
+                placeholder="https://... or app-scheme://"
+                placeholderTextColor={colors.textTertiary}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="url"
+              />
+              <Text style={styles.helper}>
+                Any web URL or app deep link (e.g. spotify://playlist/...).
+              </Text>
+            </>
+          )}
+
+          {launchMode === 'none' && (
+            <Text style={styles.helper}>
+              For off-phone activities — "I'll do this" just closes the menu.
+            </Text>
+          )}
 
           {/* Icon picker */}
           <Text style={styles.fieldLabel}>Icon</Text>
@@ -557,5 +700,44 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: colors.border,
     backgroundColor: colors.surface,
+  },
+  categoryBlock: {
+    marginTop: spacing.md,
+  },
+  categoryLabel: {
+    fontSize: typography.sizes.xs,
+    fontWeight: typography.weights.semibold,
+    color: colors.textTertiary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: spacing.sm,
+  },
+  appGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  appChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: borderRadius.md,
+    backgroundColor: colors.surface,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+  },
+  appChipSelected: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  appChipLabel: {
+    fontSize: typography.sizes.sm,
+    fontWeight: typography.weights.medium,
+    color: colors.textPrimary,
+  },
+  appChipLabelSelected: {
+    color: colors.textInverse,
   },
 });

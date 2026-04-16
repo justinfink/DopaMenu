@@ -203,7 +203,18 @@ export interface InterventionCandidate {
   requiredEffort: EffortLevel;
   contextConstraints: ContextConstraint[];
   surface: InterventionSurface;
-  launchTarget?: string; // Deep link
+  // launchTarget is a generic deep link / URL fallback. When launchAppPackage
+  // or launchIosScheme are present, the intervention screen prefers those and
+  // falls back to launchTarget only if the native app isn't installed.
+  launchTarget?: string;
+  // Android package id of the target app to route the user into (e.g. "com.chess").
+  // When present, the intervention screen builds an Android intent URL so the
+  // phone opens the native app instead of a browser.
+  launchAppPackage?: string;
+  // iOS URL scheme or universal link fragment (e.g. "chess://" or a https://
+  // universal link that the target app claims). Tried on iOS before falling
+  // back to launchTarget.
+  launchIosScheme?: string;
   identityTags: string[];
   icon?: string;
 }

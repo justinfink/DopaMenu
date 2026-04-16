@@ -39,6 +39,9 @@ const SEEDED_CUSTOM: InterventionCandidate[] = [
     requiredEffort: 'low',
     contextConstraints: [],
     surface: 'on_phone',
+    // App-router launch: try the Chess.com native app first, fall back to web.
+    launchAppPackage: 'com.chess',
+    launchIosScheme: 'chesscom://',
     launchTarget: 'https://www.chess.com/puzzles',
     identityTags: ['learner'],
     icon: 'game-controller',
@@ -52,6 +55,8 @@ export interface CustomInterventionInput {
   requiredEffort: EffortLevel;
   surface: InterventionSurface;
   launchTarget?: string;
+  launchAppPackage?: string;
+  launchIosScheme?: string;
   identityTags?: string[];
 }
 
@@ -85,6 +90,8 @@ export const useCustomInterventionsStore = create<CustomInterventionsState>()(
           contextConstraints: [],
           surface: input.surface,
           launchTarget: input.launchTarget || undefined,
+          launchAppPackage: input.launchAppPackage || undefined,
+          launchIosScheme: input.launchIosScheme || undefined,
           identityTags: input.identityTags || [],
           icon: input.icon || 'sparkles',
         };
@@ -106,6 +113,8 @@ export const useCustomInterventionsStore = create<CustomInterventionsState>()(
                   ...(input.requiredEffort !== undefined && { requiredEffort: input.requiredEffort }),
                   ...(input.surface !== undefined && { surface: input.surface }),
                   ...(input.launchTarget !== undefined && { launchTarget: input.launchTarget || undefined }),
+                  ...(input.launchAppPackage !== undefined && { launchAppPackage: input.launchAppPackage || undefined }),
+                  ...(input.launchIosScheme !== undefined && { launchIosScheme: input.launchIosScheme || undefined }),
                   ...(input.identityTags !== undefined && { identityTags: input.identityTags }),
                 }
               : i
