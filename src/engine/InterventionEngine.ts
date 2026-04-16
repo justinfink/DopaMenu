@@ -280,10 +280,17 @@ const EXPLANATIONS: Record<SituationType, string[]> = {
   ],
 };
 
+export interface GenerateInterventionOptions {
+  // When the intervention is fired by an app-launch trigger, pass the
+  // packageName so the engine can honor user-pinned top choices for that app.
+  triggerPackageName?: string;
+}
+
 export function generateIntervention(
   situation: Situation,
   user: User,
-  candidates: InterventionCandidate[] = DEFAULT_INTERVENTIONS
+  candidates: InterventionCandidate[] = DEFAULT_INTERVENTIONS,
+  options: GenerateInterventionOptions = {}
 ): InterventionDecision {
   // 1. Infer itches
   const itchInference = inferItches(situation);
@@ -297,11 +304,26 @@ export function generateIntervention(
   // 4. Rank candidates
   const ranked = rankCandidates(filtered, SOCIAL_MEDIA_MODALITY, user, itchInference);
 
-  // 5. Select primary and alternatives
-  const primary = ranked[0] || candidates[0]; // Fallback to first candidate
-  const alternatives = ranked.slice(1, 4); // Up to 3 alternatives
+  // 5. Apply per-trigger pinned choices (if any). Pinned items bypass effort
+  //    filtering — the user explicitly chose them, so we trust their intent.
+  const pinned = resolvePinnedCandidates(
+    candidates,
+    user,
+    options.triggerPackageName
+  );
 
-  // 6. Generate explanation
+  // Dedupe: remove ranked items that are already pinned
+  const pinnedIds = new Set(pinned.map((p) => p.id));
+  const nonPinnedRanked = ranked.filter((c) => !pinnedIds.has(c.id));
+
+  // Final ordered list: pinned first (in order), then ranked by engine
+  const ordered = [...pinned, ...nonPinnedRanked];
+
+  // 6. Select primary and alternatives
+  const primary = ordered[0] || candidates[0]; // Fallback to first candidate
+  const alternatives = ordered.slice(1, 4); // Up to 3 alternatives
+
+  // 7. Generate explanation
   const explanations = EXPLANATIONS[situation.type] || ['A moment to pause.'];
   const explanation = explanations[Math.floor(Math.random() * explanations.length)];
 
@@ -313,6 +335,31 @@ export function generateIntervention(
     explanation,
     timestamp: Date.now(),
   };
+}
+
+/**
+ * Resolve the user's pinned intervention IDs for a given trigger package
+ * into actual InterventionCandidate objects. Missing IDs (e.g. a pinned
+ * custom intervention that was later deleted) are silently skipped.
+ */
+function resolvePinnedCandidates(
+  candidates: InterventionCandidate[],
+  user: User,
+  triggerPackageName?: string
+): InterventionCandidate[] {
+  if (!triggerPackageName) return [];
+  const prefs = user.preferences.triggerPreferences;
+  if (!prefs) return [];
+  const pinnedIds = prefs[triggerPackageName];
+  if (!pinnedIds || pinnedIds.length === 0) return [];
+
+  const byId = new Map(candidates.map((c) => [c.id, c]));
+  const resolved: InterventionCandidate[] = [];
+  for (const id of pinnedIds) {
+    const candidate = byId.get(id);
+    if (candidate) resolved.push(candidate);
+  }
+  return resolved;
 }
 
 // ============================================

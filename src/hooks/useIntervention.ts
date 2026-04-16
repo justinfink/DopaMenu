@@ -2,7 +2,9 @@ import { useCallback, useEffect } from 'react';
 import { router } from 'expo-router';
 import { useUserStore } from '../stores/userStore';
 import { useInterventionStore } from '../stores/interventionStore';
+import { useCustomInterventionsStore } from '../stores/customInterventionsStore';
 import { generateIntervention, simulateSituation } from '../engine/InterventionEngine';
+import { DEFAULT_INTERVENTIONS } from '../constants/interventions';
 import { Situation, InterventionDecision } from '../models';
 
 // ============================================
@@ -56,8 +58,16 @@ export function useIntervention(): UseInterventionReturn {
       // Check confidence threshold
       if (sit.confidence < 0.5) return;
 
-      // Generate intervention decision
-      const decision = generateIntervention(sit, user);
+      // Build merged candidate pool (built-in + user custom) so custom items are
+      // eligible even for manual/urge-button triggers.
+      const candidatePool = [
+        ...DEFAULT_INTERVENTIONS,
+        ...useCustomInterventionsStore.getState().interventions,
+      ];
+
+      // Generate intervention decision (no trigger package for manual urge —
+      // fall back to standard ranking).
+      const decision = generateIntervention(sit, user, candidatePool);
 
       // Show intervention
       showIntervention(decision, sit);

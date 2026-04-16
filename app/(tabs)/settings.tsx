@@ -9,13 +9,16 @@ import {
   Switch,
   Alert,
   Platform,
+  AppState,
 } from 'react-native';
+import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Card } from '../../src/components';
 import { useUserStore } from '../../src/stores/userStore';
 import { useInterventionStore } from '../../src/stores/interventionStore';
 import { usePortfolioStore } from '../../src/stores/portfolioStore';
+import { useCustomInterventionsStore } from '../../src/stores/customInterventionsStore';
 import { DEFAULT_IDENTITY_ANCHORS } from '../../src/models';
 import { analyticsService, AnalyticsEvents, notificationService, appUsageService } from '../../src/services';
 import { colors, spacing, borderRadius, typography } from '../../src/constants/theme';
@@ -44,6 +47,7 @@ export default function SettingsScreen() {
   const { user, updatePreferences, addIdentityAnchor, removeIdentityAnchor, reset: resetUser } = useUserStore();
   const { reset: resetInterventions } = useInterventionStore();
   const { reset: resetPortfolio } = usePortfolioStore();
+  const { interventions: customInterventions } = useCustomInterventionsStore();
 
   const [expandedSection, setExpandedSection] = useState<string | null>(null);
   const [accessibilityGranted, setAccessibilityGranted] = useState(false);
@@ -289,6 +293,81 @@ export default function SettingsScreen() {
               );
             })}
           </View>
+        </SettingsSection>
+
+        {/* My Activities — custom interventions and per-app pins */}
+        <SettingsSection
+          title="My Activities"
+          icon="restaurant"
+          expanded={expandedSection === 'myActivities'}
+          onToggle={() => toggleSection('myActivities')}
+        >
+          <Text style={styles.sectionDescription}>
+            Build your own menu. Pin a favorite as the top choice when a specific
+            app opens — e.g. Chess.com when you reach for Instagram.
+          </Text>
+          <View style={styles.activitiesList}>
+            {customInterventions.map((item) => {
+              // Compute the human-readable "pinned for X, Y" summary
+              const pinnedForApps: string[] = [];
+              const trigMap = user.preferences.triggerPreferences || {};
+              for (const app of user.preferences.trackedApps) {
+                if ((trigMap[app.packageName] || []).includes(item.id)) {
+                  pinnedForApps.push(app.label);
+                }
+              }
+              return (
+                <TouchableOpacity
+                  key={item.id}
+                  style={styles.activityItem}
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    router.push({ pathname: '/activity-edit', params: { id: item.id } });
+                  }}
+                >
+                  <View style={styles.activityIcon}>
+                    <Ionicons
+                      name={(item.icon as any) || 'sparkles'}
+                      size={20}
+                      color={colors.primary}
+                    />
+                  </View>
+                  <View style={styles.activityContent}>
+                    <Text style={styles.activityLabel} numberOfLines={1}>
+                      {item.label}
+                    </Text>
+                    {pinnedForApps.length > 0 ? (
+                      <View style={styles.pinRow}>
+                        <Ionicons name="pin" size={12} color={colors.primary} />
+                        <Text style={styles.pinText} numberOfLines={1}>
+                          Top choice for {pinnedForApps.join(', ')}
+                        </Text>
+                      </View>
+                    ) : (
+                      <Text style={styles.activityDesc} numberOfLines={1}>
+                        {item.description || 'No description'}
+                      </Text>
+                    )}
+                  </View>
+                  <Ionicons
+                    name="chevron-forward"
+                    size={20}
+                    color={colors.textTertiary}
+                  />
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+          <TouchableOpacity
+            style={styles.addActivityButton}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              router.push('/activity-edit');
+            }}
+          >
+            <Ionicons name="add-circle" size={22} color={colors.primary} />
+            <Text style={styles.addActivityText}>Add activity</Text>
+          </TouchableOpacity>
         </SettingsSection>
 
         {/* Intervention Frequency */}
@@ -912,5 +991,68 @@ const styles = StyleSheet.create({
     fontSize: typography.sizes.md,
     fontWeight: typography.weights.medium,
     color: colors.textPrimary,
+  },
+  activitiesList: {
+    gap: spacing.sm,
+  },
+  activityItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    padding: spacing.md,
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  activityIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: borderRadius.sm,
+    backgroundColor: colors.primaryFaded,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  activityContent: {
+    flex: 1,
+  },
+  activityLabel: {
+    fontSize: typography.sizes.md,
+    fontWeight: typography.weights.medium,
+    color: colors.textPrimary,
+  },
+  activityDesc: {
+    fontSize: typography.sizes.sm,
+    color: colors.textSecondary,
+    marginTop: 2,
+  },
+  pinRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 2,
+  },
+  pinText: {
+    fontSize: typography.sizes.sm,
+    color: colors.primary,
+    fontWeight: typography.weights.medium,
+    flexShrink: 1,
+  },
+  addActivityButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    marginTop: spacing.md,
+    paddingVertical: spacing.md,
+    borderRadius: borderRadius.md,
+    borderWidth: 1.5,
+    borderColor: colors.primary,
+    borderStyle: 'dashed',
+  },
+  addActivityText: {
+    fontSize: typography.sizes.md,
+    color: colors.primary,
+    fontWeight: typography.weights.semibold,
   },
 });

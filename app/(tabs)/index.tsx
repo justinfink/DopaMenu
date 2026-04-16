@@ -14,7 +14,9 @@ import { Card, Button, ProgressRing, UrgeButton } from '../../src/components';
 import { useUserStore } from '../../src/stores/userStore';
 import { useInterventionStore } from '../../src/stores/interventionStore';
 import { usePortfolioStore } from '../../src/stores/portfolioStore';
+import { useCustomInterventionsStore } from '../../src/stores/customInterventionsStore';
 import { simulateSituation, generateIntervention } from '../../src/engine/InterventionEngine';
+import { DEFAULT_INTERVENTIONS } from '../../src/constants/interventions';
 import { getGreeting, getTimeBucket } from '../../src/utils/helpers';
 import { analyticsService, AnalyticsEvents } from '../../src/services';
 import { colors, spacing, borderRadius, typography, shadows } from '../../src/constants/theme';
@@ -54,6 +56,11 @@ export default function DashboardScreen() {
     setTimeout(() => setRefreshing(false), 1000);
   };
 
+  const buildCandidatePool = () => [
+    ...DEFAULT_INTERVENTIONS,
+    ...useCustomInterventionsStore.getState().interventions,
+  ];
+
   const handleUrgePress = () => {
     if (!user) return;
 
@@ -64,7 +71,7 @@ export default function DashboardScreen() {
     });
 
     const situation = simulateSituation();
-    const decision = generateIntervention(situation, user);
+    const decision = generateIntervention(situation, user, buildCandidatePool());
 
     showIntervention(decision, situation);
     router.push('/intervention');
@@ -76,7 +83,7 @@ export default function DashboardScreen() {
     analyticsService.track(AnalyticsEvents.DEMO_TRIGGERED, { timeBucket });
 
     const situation = simulateSituation();
-    const decision = generateIntervention(situation, user);
+    const decision = generateIntervention(situation, user, buildCandidatePool());
 
     showIntervention(decision, situation);
     router.push('/intervention');

@@ -25,6 +25,8 @@ interface UserState {
   removeIdentityAnchor: (anchorId: string) => void;
   updateIdentityPriority: (anchorId: string, priority: number) => void;
   updatePreferences: (preferences: Partial<UserPreferences>) => void;
+  setTriggerPins: (packageName: string, interventionIds: string[]) => void;
+  clearTriggerPins: (packageName: string) => void;
   addQuietHours: (start: string, end: string) => void;
   removeQuietHours: (index: number) => void;
   addExcludedApp: (appId: string) => void;
@@ -58,6 +60,11 @@ const defaultPreferences: UserPreferences = {
     { packageName: 'com.facebook.katana', label: 'Facebook', enabled: true },
     { packageName: 'com.reddit.frontpage', label: 'Reddit', enabled: true },
   ],
+  // Per-trigger pin map. Seeded with a Chess.com top pin for Instagram so new
+  // users experience the feature out of the box. Users can edit/remove it.
+  triggerPreferences: {
+    'com.instagram.android': ['int-custom-chess-seed'],
+  },
 };
 
 export const useUserStore = create<UserState>()(
@@ -73,13 +80,24 @@ export const useUserStore = create<UserState>()(
           // Covers users who installed before the current defaults were written.
           const existingPackages = new Set(existing.preferences.trackedApps.map(a => a.packageName));
           const newApps = defaultPreferences.trackedApps.filter(a => !existingPackages.has(a.packageName));
-          if (newApps.length > 0) {
+
+          // Migration: ensure triggerPreferences exists for users upgrading from
+          // a version where the field didn't exist. Seed the Chess-for-Instagram
+          // pin only if the user has no existing triggerPreferences at all —
+          // don't overwrite intentional configuration.
+          const hasTriggerPrefs = existing.preferences.triggerPreferences !== undefined;
+          const nextTriggerPrefs = hasTriggerPrefs
+            ? existing.preferences.triggerPreferences
+            : defaultPreferences.triggerPreferences;
+
+          if (newApps.length > 0 || !hasTriggerPrefs) {
             set({
               user: {
                 ...existing,
                 preferences: {
                   ...existing.preferences,
                   trackedApps: [...existing.preferences.trackedApps, ...newApps],
+                  triggerPreferences: nextTriggerPrefs,
                 },
               },
               isLoading: false,
@@ -184,6 +202,41 @@ export const useUserStore = create<UserState>()(
               preferences: {
                 ...state.user.preferences,
                 ...preferences,
+              },
+            },
+          };
+        });
+      },
+
+      setTriggerPins: (packageName, interventionIds) => {
+        set((state) => {
+          if (!state.user) return state;
+          const currentMap = state.user.preferences.triggerPreferences || {};
+          const nextMap = { ...currentMap, [packageName]: interventionIds };
+          return {
+            user: {
+              ...state.user,
+              preferences: {
+                ...state.user.preferences,
+                triggerPreferences: nextMap,
+              },
+            },
+          };
+        });
+      },
+
+      clearTriggerPins: (packageName) => {
+        set((state) => {
+          if (!state.user) return state;
+          const currentMap = state.user.preferences.triggerPreferences || {};
+          const nextMap = { ...currentMap };
+          delete nextMap[packageName];
+          return {
+            user: {
+              ...state.user,
+              preferences: {
+                ...state.user.preferences,
+                triggerPreferences: nextMap,
               },
             },
           };

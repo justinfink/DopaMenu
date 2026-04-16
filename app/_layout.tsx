@@ -6,8 +6,10 @@ import * as SplashScreen from 'expo-splash-screen';
 import * as Notifications from 'expo-notifications';
 import { useUserStore } from '../src/stores/userStore';
 import { useInterventionStore } from '../src/stores/interventionStore';
+import { useCustomInterventionsStore } from '../src/stores/customInterventionsStore';
 import { notificationService, analyticsService, AnalyticsEvents, appUsageService } from '../src/services';
 import { simulateSituation, generateIntervention } from '../src/engine/InterventionEngine';
+import { DEFAULT_INTERVENTIONS } from '../src/constants/interventions';
 import { colors } from '../src/constants/theme';
 
 // Prevent splash screen from auto-hiding
@@ -74,6 +76,12 @@ export default function RootLayout() {
 
     setupServices();
 
+    // Build the merged candidate pool once per effect run: built-in + user custom
+    const buildCandidatePool = () => [
+      ...DEFAULT_INTERVENTIONS,
+      ...useCustomInterventionsStore.getState().interventions,
+    ];
+
     // Listen for app launch events via NativeEventEmitter — fires when DopaMenu is in the foreground
     if (Platform.OS === 'android' && currentUser.preferences.appMonitoringEnabled) {
       appLaunchUnsubscribe.current = appUsageService.onAppLaunched((event) => {
@@ -83,18 +91,36 @@ export default function RootLayout() {
           detectedApp: event.label,
         });
         const situation = simulateSituation();
-        const decision = generateIntervention(situation, currentUser);
+        const decision = generateIntervention(
+          situation,
+          currentUser,
+          buildCandidatePool(),
+          { triggerPackageName: event.packageName }
+        );
         showIntervention(decision, situation);
         router.push('/intervention');
       });
     }
 
-    // Handle deep links from the native AppUsageMonitorService (dopamenu://intervention?trigger=app_intercept)
+    // Handle deep links from the native AppUsageMonitorService
+    // (dopamenu://intervention?trigger=app_intercept&package=com.instagram.android)
     // Fires when the app is backgrounded or closed and the notification is tapped
     const handleDeepLink = ({ url }: { url: string }) => {
       if (url.startsWith('dopamenu://intervention')) {
+        // Extract ?package=... from the deep link (written by the native service).
+        let triggerPackageName: string | undefined;
+        const queryIdx = url.indexOf('?');
+        if (queryIdx >= 0) {
+          const params = new URLSearchParams(url.substring(queryIdx + 1));
+          triggerPackageName = params.get('package') || undefined;
+        }
         const situation = simulateSituation();
-        const decision = generateIntervention(situation, currentUser);
+        const decision = generateIntervention(
+          situation,
+          currentUser,
+          buildCandidatePool(),
+          { triggerPackageName }
+        );
         showIntervention(decision, situation);
         router.push('/intervention');
       }
@@ -118,9 +144,13 @@ export default function RootLayout() {
 
       // Handle different notification types
       if (data?.type === 'intervention' || data?.type === 'high_risk_reminder' || data?.type === 'immediate_checkin') {
-        // Generate an intervention and show it
+        // Generate an intervention and show it (no trigger app — generic check-in)
         const situation = simulateSituation();
-        const decision = generateIntervention(situation, currentUser);
+        const decision = generateIntervention(
+          situation,
+          currentUser,
+          buildCandidatePool()
+        );
         showIntervention(decision, situation);
         router.push('/intervention');
       }

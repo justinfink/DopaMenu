@@ -53,6 +53,12 @@ export interface UserPreferences {
   // App usage monitoring (Android only)
   appMonitoringEnabled: boolean;
   trackedApps: TrackedAppConfig[];
+  // Per-trigger pinned interventions.
+  // Map of tracked app packageName → ordered intervention IDs shown as top options
+  // when that app triggers an intercept. Interventions can be either built-in
+  // (from DEFAULT_INTERVENTIONS) or custom (from customInterventionsStore).
+  // Optional because older persisted users may not have it until migration.
+  triggerPreferences?: Record<string, string[]>;
 }
 
 export interface TimeRange {
