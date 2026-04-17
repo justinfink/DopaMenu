@@ -19,6 +19,7 @@ import { useInterventionStore } from '../src/stores/interventionStore';
 import { useUserStore } from '../src/stores/userStore';
 import { InterventionCandidate } from '../src/models';
 import { colors, spacing, borderRadius, typography, shadows } from '../src/constants/theme';
+import { appUsageService } from '../src/services';
 
 // ============================================
 // Intervention Modal
@@ -54,17 +55,22 @@ function buildAndroidIntentUrl(packageName: string, fallbackUrl?: string): strin
   return `${base}${parts[0]};${fallback}${parts[1]}`;
 }
 
-async function launchIntervention(intervention: InterventionCandidate): Promise<void> {
+// Returns true if the intervention successfully routed the user somewhere
+// (a native app, a URL, or a tel:/sms: target). Returns false for off-phone
+// activities that have nothing to launch — the caller uses this to decide
+// whether to minimize DopaMenu so the user returns to their previous task
+// instead of being stranded on a blank DopaMenu screen.
+async function launchIntervention(intervention: InterventionCandidate): Promise<boolean> {
   const { launchAppPackage, launchIosScheme, launchTarget } = intervention;
 
   // Nothing to launch — off-phone activity
-  if (!launchAppPackage && !launchIosScheme && !launchTarget) return;
+  if (!launchAppPackage && !launchIosScheme && !launchTarget) return false;
 
   if (Platform.OS === 'android' && launchAppPackage) {
     const intentUrl = buildAndroidIntentUrl(launchAppPackage, launchTarget);
     try {
       await Linking.openURL(intentUrl);
-      return;
+      return true;
     } catch {
       // Fall through to web fallback below
     }
@@ -75,7 +81,7 @@ async function launchIntervention(intervention: InterventionCandidate): Promise<
       const supported = await Linking.canOpenURL(launchIosScheme);
       if (supported) {
         await Linking.openURL(launchIosScheme);
-        return;
+        return true;
       }
     } catch {
       // Fall through to web fallback
@@ -85,10 +91,13 @@ async function launchIntervention(intervention: InterventionCandidate): Promise<
   if (launchTarget) {
     try {
       await Linking.openURL(launchTarget);
+      return true;
     } catch {
       // Silently ignore — nothing to route to
     }
   }
+
+  return false;
 }
 
 export default function InterventionScreen() {
@@ -121,7 +130,31 @@ export default function InterventionScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
   }, []);
 
-  const handleClose = () => {
+  // DopaMenu is a pass-through layer: after the user makes a choice we
+  // never want them stranded on our UI. The options are:
+  //   1. A native app was launched → Android has already switched tasks.
+  //      We just need to reset our own nav stack so we don't come back to
+  //      a stale modal next time the user returns to DopaMenu.
+  //   2. No app was launched (off-phone activity, dismiss, or continue) →
+  //      we send DopaMenu to the background via moveTaskToBack so the user
+  //      returns to the app they were using or the home screen. router.back()
+  //      would leave them on a blank screen because we were surfaced via
+  //      deep link and have no previous route to pop to.
+  const dismissToPreviousTask = () => {
+    // Reset our own nav stack so re-opening DopaMenu lands on the tabs,
+    // not on the now-empty intervention modal.
+    try {
+      router.replace('/(tabs)');
+    } catch {
+      // If the tabs route isn't available yet, ignore — minimize still works.
+    }
+    if (Platform.OS === 'android') {
+      // Fire-and-forget; any error just leaves the user on the tabs screen.
+      appUsageService.minimizeApp().catch(() => {});
+    }
+  };
+
+  const runCloseAnimation = (onDone: () => void) => {
     Animated.parallel([
       Animated.timing(slideAnim, {
         toValue: SCREEN_HEIGHT,
@@ -135,28 +168,51 @@ export default function InterventionScreen() {
       }),
     ]).start(() => {
       clearActiveIntervention();
-      router.back();
+      onDone();
     });
   };
 
-  const handleAccept = (intervention?: InterventionCandidate) => {
+  const handleClose = () => {
+    runCloseAnimation(dismissToPreviousTask);
+  };
+
+  const handleAccept = async (intervention?: InterventionCandidate) => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     recordOutcome('accepted');
     const chosen = intervention ?? displayIntervention;
-    handleClose();
-    launchIntervention(chosen);
+
+    // Kick off the launch in parallel with the close animation. For a
+    // native app launch, the OS task switch typically happens during the
+    // 250ms close — so the modal slide-down plays while DopaMenu is
+    // already backgrounded, and the user lands smoothly in the target app.
+    const launchPromise = launchIntervention(chosen);
+
+    runCloseAnimation(async () => {
+      const launched = await launchPromise;
+      if (launched) {
+        // Target app is up — just tidy up our nav stack behind the scenes.
+        try {
+          router.replace('/(tabs)');
+        } catch {
+          // Stack may not be ready (e.g. direct deep-link surface); ignore.
+        }
+      } else {
+        // Off-phone activity: return user to where they were.
+        dismissToPreviousTask();
+      }
+    });
   };
 
   const handleDismiss = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     recordOutcome('dismissed');
-    handleClose();
+    runCloseAnimation(dismissToPreviousTask);
   };
 
   const handleContinue = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     recordOutcome('continued_default');
-    handleClose();
+    runCloseAnimation(dismissToPreviousTask);
   };
 
   const handleSelectAlternative = (intervention: InterventionCandidate) => {

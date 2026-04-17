@@ -44,6 +44,7 @@ interface AppUsageModule {
   checkAccessibilityPermission(): Promise<boolean>;
   requestAccessibilityPermission(): Promise<void>;
   openAppInfo(): Promise<void>;
+  minimizeApp(): Promise<boolean>;
 }
 
 // Get native module if available
@@ -251,6 +252,24 @@ export const appUsageService = {
    * Accessibility show "Controlled by Restricted Setting" until the user
    * taps ⋮ → "Allow restricted settings" from this page.
    */
+  /**
+   * Send DopaMenu to the background so the user returns to whatever they
+   * were doing before DopaMenu intercepted them (the previous app, or the
+   * home screen). Used when the user accepts a suggestion that has no app
+   * to launch — e.g. "go for a walk" — so they aren't stranded on a blank
+   * DopaMenu screen after the modal closes. No-op if the native module
+   * isn't available.
+   */
+  async minimizeApp(): Promise<boolean> {
+    if (!this.isSupported() || !NativeAppUsage) return false;
+    try {
+      return await NativeAppUsage.minimizeApp();
+    } catch (error) {
+      console.error('[AppUsage] Failed to minimize app:', error);
+      return false;
+    }
+  },
+
   async openAppInfo(): Promise<void> {
     if (!this.isSupported() || !NativeAppUsage) {
       // Best-effort fallback for when the native module isn't registered.

@@ -82,6 +82,34 @@ export default function RootLayout() {
       ...useCustomInterventionsStore.getState().interventions,
     ];
 
+    // A single app launch can reach us through up to three paths at once:
+    //  - onAppLaunched event emitter (AccessibilityService, ~100ms)
+    //  - dopamenu:// deep link (AppUsageMonitorService startActivity)
+    //  - notification response (fallback notification tap)
+    // Without a shared JS-side throttle we end up calling router.push twice
+    // within a few hundred ms, which stacks two intervention modals and
+    // produces the "double load" feel. Dedupe here — if we triggered the
+    // modal in the last 3s, the second call is a no-op.
+    let lastTriggerAt = 0;
+    const surfaceIntervention = (opts: { triggerPackageName?: string; trigger: string }) => {
+      const now = Date.now();
+      if (now - lastTriggerAt < 3000) return;
+      lastTriggerAt = now;
+
+      const situation = simulateSituation();
+      const decision = generateIntervention(
+        situation,
+        currentUser,
+        buildCandidatePool(),
+        { triggerPackageName: opts.triggerPackageName }
+      );
+      showIntervention(decision, situation);
+      // Use navigate instead of push so we don't stack multiple /intervention
+      // screens if the router state wasn't cleaned up (e.g. user left via
+      // home button while modal was open).
+      router.navigate('/intervention');
+    };
+
     // Listen for app launch events via NativeEventEmitter — fires when DopaMenu is in the foreground
     if (Platform.OS === 'android' && currentUser.preferences.appMonitoringEnabled) {
       appLaunchUnsubscribe.current = appUsageService.onAppLaunched((event) => {
@@ -90,15 +118,7 @@ export default function RootLayout() {
           trigger: 'app_detection',
           detectedApp: event.label,
         });
-        const situation = simulateSituation();
-        const decision = generateIntervention(
-          situation,
-          currentUser,
-          buildCandidatePool(),
-          { triggerPackageName: event.packageName }
-        );
-        showIntervention(decision, situation);
-        router.push('/intervention');
+        surfaceIntervention({ triggerPackageName: event.packageName, trigger: 'app_detection' });
       });
     }
 
@@ -114,15 +134,7 @@ export default function RootLayout() {
           const params = new URLSearchParams(url.substring(queryIdx + 1));
           triggerPackageName = params.get('package') || undefined;
         }
-        const situation = simulateSituation();
-        const decision = generateIntervention(
-          situation,
-          currentUser,
-          buildCandidatePool(),
-          { triggerPackageName }
-        );
-        showIntervention(decision, situation);
-        router.push('/intervention');
+        surfaceIntervention({ triggerPackageName, trigger: 'deep_link' });
       }
     };
 
@@ -144,15 +156,10 @@ export default function RootLayout() {
 
       // Handle different notification types
       if (data?.type === 'intervention' || data?.type === 'high_risk_reminder' || data?.type === 'immediate_checkin') {
-        // Generate an intervention and show it (no trigger app — generic check-in)
-        const situation = simulateSituation();
-        const decision = generateIntervention(
-          situation,
-          currentUser,
-          buildCandidatePool()
-        );
-        showIntervention(decision, situation);
-        router.push('/intervention');
+        // Generic check-in (no trigger app). Goes through the same dedupe
+        // so a notification tap that races with an app-launch intercept
+        // doesn't stack a second modal.
+        surfaceIntervention({ trigger: 'notification' });
       }
     });
 

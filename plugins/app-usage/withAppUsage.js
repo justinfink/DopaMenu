@@ -206,6 +206,34 @@ class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
         var monitoringPackages: List<String> = emptyList()
         var instance: DopaMenuAppUsageModule? = null
 
+        // Shared intercept state across *both* detection services
+        // (AccessibilityService + AppUsageMonitorService). Without this the
+        // two services fire independent throttles and can both intercept the
+        // same app launch within ~1-2s, causing the DopaMenu modal to
+        // re-animate and a heads-up notification to appear on top of it.
+        // All access goes through the @Synchronized claimIntercept below,
+        // which provides the needed memory visibility.
+        private var lastInterceptPackage: String? = null
+        private var lastInterceptTime: Long = 0L
+        private const val INTERCEPT_COOLDOWN_MS: Long = 10000L
+
+        /**
+         * Atomically claim the intercept for [packageName]. Returns true if
+         * this caller should proceed with surfacing DopaMenu; false if
+         * another service already intercepted within the cooldown window.
+         */
+        @Synchronized
+        fun claimIntercept(packageName: String): Boolean {
+            val now = System.currentTimeMillis()
+            if (packageName == lastInterceptPackage &&
+                now - lastInterceptTime < INTERCEPT_COOLDOWN_MS) {
+                return false
+            }
+            lastInterceptPackage = packageName
+            lastInterceptTime = now
+            return true
+        }
+
         /** Called by DopaMenuAccessibilityService on the main thread */
         fun onAccessibilityAppDetected(packageName: String) {
             if (!monitoringPackages.contains(packageName)) return
@@ -358,6 +386,27 @@ class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             reactApplicationContext.startActivity(intent)
             promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
+
+    // Send DopaMenu to the background so the user returns to whatever they
+    // were doing before we intercepted them. Critical when the user accepts
+    // a suggestion that has no app to launch (e.g. "go for a walk"):
+    // without this they're stranded on a blank DopaMenu screen after the
+    // modal closes, because we have no navigation stack to pop from when
+    // we were surfaced via deep link from the AccessibilityService.
+    @ReactMethod
+    fun minimizeApp(promise: Promise) {
+        try {
+            val activity = currentActivity
+            if (activity != null) {
+                activity.runOnUiThread { activity.moveTaskToBack(true) }
+                promise.resolve(true)
+            } else {
+                promise.resolve(false)
+            }
         } catch (e: Exception) {
             promise.reject("ERROR", e.message)
         }
@@ -554,6 +603,15 @@ class AppUsageMonitorService : Service() {
     }
 
     private fun onTrackedAppLaunched(packageName: String) {
+        // Coordinate with DopaMenuAccessibilityService via shared state so
+        // only one intercept path fires per app launch. If Accessibility
+        // already claimed this launch (likely — it fires ~100ms vs our 2s
+        // poll), bail out entirely to avoid a second foreground start and
+        // a heads-up notification stacked on top of the modal.
+        if (!DopaMenuAppUsageModule.claimIntercept(packageName)) {
+            return
+        }
+
         // Deep link into the intervention screen
         val deepLink = Uri.parse("dopamenu://intervention?trigger=app_intercept&package=\${packageName}")
         val intent = Intent(Intent.ACTION_VIEW, deepLink).apply {
@@ -578,9 +636,13 @@ class AppUsageMonitorService : Service() {
             // Fall through to notification
         }
 
-        // Always also post a high-priority notification as a fallback/backup
-        // path. On devices where the direct launch succeeded this is a
-        // redundant but harmless reminder the user can swipe away.
+        // Only post the fallback notification when the direct launch failed.
+        // Previously we always posted it (demoted to LOW on success), which
+        // still produced a visible notification tile layered over the modal
+        // and felt clunky. If startActivity worked, the modal is the UX —
+        // no notification needed.
+        if (launchedDirectly) return
+
         val pendingIntent = PendingIntent.getActivity(
             this, System.currentTimeMillis().toInt(), intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
@@ -602,14 +664,12 @@ class AppUsageMonitorService : Service() {
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
 
-        // If we already launched DopaMenu directly, make the fallback
-        // notification lower priority so it doesn't also heads-up.
         val notif = NotificationCompat.Builder(this, "app_detection")
             .setContentTitle("DopaMenu")
             .setContentText(messages.random())
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .setContentIntent(pendingIntent)
-            .setPriority(if (launchedDirectly) NotificationCompat.PRIORITY_LOW else NotificationCompat.PRIORITY_HIGH)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .build()
 
@@ -636,11 +696,6 @@ import android.view.accessibility.AccessibilityEvent
 // and overlay-like instead of a notification the user has to tap.
 class DopaMenuAccessibilityService : AccessibilityService() {
 
-    // Throttle foreground-intent spam. A single window-state change can fire
-    // the event multiple times as activities transition.
-    private var lastInterceptedPackage: String? = null
-    private var lastInterceptTime: Long = 0L
-
     override fun onServiceConnected() {
         serviceInfo = AccessibilityServiceInfo().apply {
             eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
@@ -656,12 +711,13 @@ class DopaMenuAccessibilityService : AccessibilityService() {
         // Only intercept apps the user is tracking
         if (!DopaMenuAppUsageModule.monitoringPackages.contains(pkg)) return
 
-        // Ignore repeats within 5s for the same package — stops us from
-        // launching DopaMenu over itself on activity transitions.
-        val now = System.currentTimeMillis()
-        if (pkg == lastInterceptedPackage && now - lastInterceptTime < 5000L) return
-        lastInterceptedPackage = pkg
-        lastInterceptTime = now
+        // Coordinate with AppUsageMonitorService via the module's shared
+        // intercept claim. A single app launch fires TYPE_WINDOW_STATE_CHANGED
+        // multiple times (splash → main activity → feed etc.) and the
+        // polling service may fire concurrently — claimIntercept() returns
+        // false for all repeats within the cooldown so we only surface
+        // DopaMenu once per launch session.
+        if (!DopaMenuAppUsageModule.claimIntercept(pkg)) return
 
         // Forward to the module so JS can record analytics if foregrounded
         DopaMenuAppUsageModule.onAccessibilityAppDetected(pkg)
