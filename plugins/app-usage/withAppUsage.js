@@ -184,6 +184,7 @@ function getModuleCode(packageName) {
   return `package ${packageName}
 
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.app.Activity
 import android.app.AppOpsManager
 import android.app.usage.UsageStats
 import android.app.usage.UsageStatsManager
@@ -397,10 +398,14 @@ class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
     // without this they're stranded on a blank DopaMenu screen after the
     // modal closes, because we have no navigation stack to pop from when
     // we were surfaced via deep link from the AccessibilityService.
+    //
+    // Note: we use getCurrentActivity() explicitly rather than the Kotlin
+    // property accessor; some toolchains fail to resolve the synthetic
+    // property against ReactContextBaseJavaModule at compile time.
     @ReactMethod
     fun minimizeApp(promise: Promise) {
         try {
-            val activity = currentActivity
+            val activity: Activity? = getCurrentActivity()
             if (activity != null) {
                 activity.runOnUiThread { activity.moveTaskToBack(true) }
                 promise.resolve(true)
