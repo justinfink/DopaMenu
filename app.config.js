@@ -21,7 +21,7 @@ export default {
     },
     ios: {
       supportsTablet: true,
-      bundleIdentifier: 'com.dopamenu.app',
+      bundleIdentifier: 'ai.dopamenu.app',
       infoPlist: {
         NSCalendarsUsageDescription:
           'DopaMenu uses your calendar to understand your schedule and suggest better alternatives at the right moments.',
