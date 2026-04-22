@@ -51,14 +51,18 @@ const defaultPreferences: UserPreferences = {
     { id: 'afternoon', label: 'Afternoon slump', hour: 15, minute: 0, enabled: true, daysOfWeek: [2, 3, 4, 5, 6] },
     { id: 'evening', label: 'Evening wind-down', hour: 21, minute: 0, enabled: true, daysOfWeek: [1, 2, 3, 4, 5, 6, 7] },
   ],
-  // App monitoring (Android only)
+  // App monitoring. On Android this drives the UsageStats/Accessibility
+  // detection pipeline. On iOS it drives the Shortcuts-based redirect path:
+  // enabled=true means "user has set up (or will set up) Shortcuts
+  // automations for these apps." iosBundleId is the bundle id that goes into
+  // the Shortcuts "App is Opened" trigger.
   appMonitoringEnabled: false,
   trackedApps: [
-    { packageName: 'com.instagram.android', label: 'Instagram', enabled: true },
-    { packageName: 'com.twitter.android', label: 'Twitter/X', enabled: true },
-    { packageName: 'com.zhiliaoapp.musically', label: 'TikTok', enabled: true },
-    { packageName: 'com.facebook.katana', label: 'Facebook', enabled: true },
-    { packageName: 'com.reddit.frontpage', label: 'Reddit', enabled: true },
+    { packageName: 'com.instagram.android', label: 'Instagram', enabled: true, iosBundleId: 'com.burbn.instagram' },
+    { packageName: 'com.twitter.android', label: 'Twitter/X', enabled: true, iosBundleId: 'com.atebits.Tweetie2' },
+    { packageName: 'com.zhiliaoapp.musically', label: 'TikTok', enabled: true, iosBundleId: 'com.zhiliaoapp.musically' },
+    { packageName: 'com.facebook.katana', label: 'Facebook', enabled: true, iosBundleId: 'com.facebook.Facebook' },
+    { packageName: 'com.reddit.frontpage', label: 'Reddit', enabled: true, iosBundleId: 'com.reddit.Reddit' },
   ],
   // Per-trigger pin map. Seeded with a Chess.com top pin for Instagram so new
   // users experience the feature out of the box. Users can edit/remove it.
@@ -81,6 +85,17 @@ export const useUserStore = create<UserState>()(
           const existingPackages = new Set(existing.preferences.trackedApps.map(a => a.packageName));
           const newApps = defaultPreferences.trackedApps.filter(a => !existingPackages.has(a.packageName));
 
+          // Migration: backfill iosBundleId onto existing tracked apps that
+          // were persisted before iOS support shipped. Look up the bundle id
+          // from the current defaults by packageName.
+          const defaultsByPackage = Object.fromEntries(
+            defaultPreferences.trackedApps.map(a => [a.packageName, a])
+          );
+          const mergedExistingApps = existing.preferences.trackedApps.map(a =>
+            a.iosBundleId ? a : { ...a, iosBundleId: defaultsByPackage[a.packageName]?.iosBundleId }
+          );
+          const needsIosBackfill = mergedExistingApps.some((a, i) => a !== existing.preferences.trackedApps[i]);
+
           // Migration: ensure triggerPreferences exists for users upgrading from
           // a version where the field didn't exist. Seed the Chess-for-Instagram
           // pin only if the user has no existing triggerPreferences at all —
@@ -90,13 +105,13 @@ export const useUserStore = create<UserState>()(
             ? existing.preferences.triggerPreferences
             : defaultPreferences.triggerPreferences;
 
-          if (newApps.length > 0 || !hasTriggerPrefs) {
+          if (newApps.length > 0 || !hasTriggerPrefs || needsIosBackfill) {
             set({
               user: {
                 ...existing,
                 preferences: {
                   ...existing.preferences,
-                  trackedApps: [...existing.preferences.trackedApps, ...newApps],
+                  trackedApps: [...mergedExistingApps, ...newApps],
                   triggerPreferences: nextTriggerPrefs,
                 },
               },

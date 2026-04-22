@@ -102,17 +102,32 @@ export default function RootLayout() {
       });
     }
 
-    // Handle deep links from the native AppUsageMonitorService
-    // (dopamenu://intervention?trigger=app_intercept&package=com.instagram.android)
-    // Fires when the app is backgrounded or closed and the notification is tapped
+    // Handle deep links from the native AppUsageMonitorService (Android) or
+    // iOS Shortcuts automation. URL shapes:
+    //   Android: dopamenu://intervention?trigger=app_intercept&package=com.instagram.android
+    //   iOS:     dopamenu://intervention?app=com.burbn.instagram
+    // Fires when the app is backgrounded or closed and the notification is
+    // tapped, or when Shortcuts fires the "App is Opened" automation.
     const handleDeepLink = ({ url }: { url: string }) => {
       if (url.startsWith('dopamenu://intervention')) {
-        // Extract ?package=... from the deep link (written by the native service).
+        // Extract ?package=... (Android) or ?app=... (iOS Shortcuts) from
+        // the deep link. iOS passes the iOS bundle id, which we then map
+        // back to the tracked app by iosBundleId to find the corresponding
+        // Android packageName (interventions are keyed by packageName).
         let triggerPackageName: string | undefined;
         const queryIdx = url.indexOf('?');
         if (queryIdx >= 0) {
           const params = new URLSearchParams(url.substring(queryIdx + 1));
           triggerPackageName = params.get('package') || undefined;
+          if (!triggerPackageName) {
+            const iosBundleId = params.get('app') || undefined;
+            if (iosBundleId) {
+              const match = currentUser.preferences.trackedApps.find(
+                (a) => a.iosBundleId === iosBundleId
+              );
+              triggerPackageName = match?.packageName;
+            }
+          }
         }
         const situation = simulateSituation();
         const decision = generateIntervention(
@@ -217,6 +232,7 @@ export default function RootLayout() {
             animation: 'slide_from_bottom',
           }}
         />
+        <Stack.Screen name="ios-setup" options={{ headerShown: false }} />
       </Stack>
     </>
   );

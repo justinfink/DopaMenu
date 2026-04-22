@@ -4,3 +4,5 @@ export type { HighRiskTime } from './notifications';
 export { calendarService } from './calendar';
 export { analyticsService, AnalyticsEvents } from './analytics';
 export { appUsageService } from './appUsage';
+export { screenTimeService } from './screenTime';
+export type { ShortcutSetupInstructions } from './screenTime';

@@ -70,7 +70,7 @@ export const appUsageService = {
    */
   getPlatformExplanation(): string {
     if (Platform.OS === 'ios') {
-      return 'iOS does not allow apps to detect other app launches. DopaMenu uses scheduled notifications at high-risk times instead. You can also use the Urge Button when you feel the pull.';
+      return 'On iOS, DopaMenu uses the Shortcuts app to redirect you here when you open a tracked app. Set up the automation once per app — iOS 16.4+ runs it automatically without prompts.';
     }
     return 'DopaMenu can detect when you open certain apps and show you alternatives. This requires the Usage Access permission.';
   },

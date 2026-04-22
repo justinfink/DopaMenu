@@ -689,19 +689,42 @@ export default function SettingsScreen() {
           </SettingsSection>
         )}
 
-        {/* iOS Alternative Explanation */}
+        {/* iOS App Redirect (Shortcuts-based) */}
         {Platform.OS === 'ios' && (
-          <Card style={styles.infoCard}>
-            <View style={styles.infoContent}>
-              <Ionicons name="information-circle" size={20} color={colors.primary} />
-              <View style={styles.infoText}>
-                <Text style={styles.infoTitle}>About App Detection</Text>
-                <Text style={styles.infoDescription}>
-                  iOS doesn't allow detecting other app launches. Use scheduled reminders above or the Urge Button when you feel the pull.
-                </Text>
+          <TouchableOpacity
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              router.push('/ios-setup');
+            }}
+          >
+            <Card style={styles.infoCard}>
+              <View style={styles.infoContent}>
+                <View style={styles.toggleIcon}>
+                  <Ionicons name="swap-horizontal" size={20} color={colors.primary} />
+                </View>
+                <View style={styles.infoText}>
+                  <Text style={styles.infoTitle}>iOS App Redirect</Text>
+                  <Text style={styles.infoDescription}>
+                    {(() => {
+                      const configured = user.preferences.trackedApps.filter(
+                        (a) => a.iosShortcutConfigured
+                      ).length;
+                      const total = user.preferences.trackedApps.length;
+                      if (configured === 0) {
+                        return `Set up Shortcuts to redirect Instagram, TikTok, and more to DopaMenu`;
+                      }
+                      return `${configured} of ${total} apps redirecting to DopaMenu`;
+                    })()}
+                  </Text>
+                </View>
+                <Ionicons
+                  name="chevron-forward"
+                  size={20}
+                  color={colors.textTertiary}
+                />
               </View>
-            </View>
-          </Card>
+            </Card>
+          </TouchableOpacity>
         )}
 
         {/* Quiet Hours Info */}

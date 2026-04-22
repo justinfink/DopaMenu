@@ -38,6 +38,15 @@ export interface TrackedAppConfig {
   packageName: string;
   label: string;
   enabled: boolean;
+  // iOS bundle identifier for the Shortcuts "App is Opened" automation
+  // trigger. Example: 'com.burbn.instagram' for Instagram. Optional because
+  // older persisted users may not have it until migration; also not every
+  // tracked app has a known bundle id.
+  iosBundleId?: string;
+  // True once the user has told DopaMenu they've created the Shortcuts
+  // automation for this app. Used to drive the iOS setup checklist. This
+  // is self-reported — we cannot verify the automation exists.
+  iosShortcutConfigured?: boolean;
 }
 
 export interface UserPreferences {

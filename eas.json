@@ -19,6 +19,12 @@
         "simulator": true
       }
     },
+    "preview-device": {
+      "distribution": "internal",
+      "ios": {
+        "simulator": false
+      }
+    },
     "production": {
       "android": {
         "buildType": "app-bundle"
