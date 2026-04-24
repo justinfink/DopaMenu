@@ -44,7 +44,31 @@ interface AppUsageModule {
   checkAccessibilityPermission(): Promise<boolean>;
   requestAccessibilityPermission(): Promise<void>;
   openAppInfo(): Promise<void>;
+  checkIsRestrictedInstall(): Promise<boolean>;
+  checkRestrictedSettingsGranted(): Promise<boolean>;
+  startOnboardingWatch(target: string): Promise<void>;
+  stopOnboardingWatch(): Promise<void>;
+  getDeviceProfile(): Promise<DeviceProfile>;
+  suppressIntercept(packageName: string, durationMs: number): Promise<void>;
 }
+
+export interface DeviceProfile {
+  manufacturer: string;
+  brand: string;
+  model: string;
+  sdkInt: number;
+  isSamsung: boolean;
+  isPixel: boolean;
+  isOnePlus: boolean;
+  isXiaomi: boolean;
+  // 0 when not Samsung or unknown. 6+ on OneUI 6 (Android 14 base), 7+ on OneUI 7.
+  oneUIVersion: number;
+}
+
+export type OnboardingWatchTarget =
+  | 'restricted_unlock'
+  | 'usage_access'
+  | 'accessibility';
 
 // Get native module if available
 const NativeAppUsage: AppUsageModule | null = Platform.OS === 'android'
@@ -246,6 +270,50 @@ export const appUsageService = {
   },
 
   /**
+   * Returns true when the restricted-settings unlock step is required before
+   * the user can toggle Usage Access or Accessibility. Combines
+   * checkIsRestrictedInstall + checkRestrictedSettingsGranted into one call.
+   */
+  async needsRestrictedUnlock(): Promise<boolean> {
+    const [isRestricted, alreadyGranted] = await Promise.all([
+      this.checkIsRestrictedInstall(),
+      this.checkRestrictedSettingsGranted(),
+    ]);
+    return isRestricted && !alreadyGranted;
+  },
+
+  /**
+   * Returns true if the user has already granted "Allow restricted settings"
+   * for this app (App Info → ⋮ → Allow restricted settings). Always returns
+   * true on Android < 13 since restricted settings don't apply there.
+   * Use this together with checkIsRestrictedInstall() to decide whether to
+   * show the App Info unlock step or jump straight to the permission screen.
+   */
+  async checkRestrictedSettingsGranted(): Promise<boolean> {
+    if (!this.isSupported() || !NativeAppUsage) return true;
+    try {
+      return await NativeAppUsage.checkRestrictedSettingsGranted();
+    } catch {
+      return false;
+    }
+  },
+
+  /**
+   * Returns true when the app was NOT installed via the Play Store AND the
+   * device is Android 13+. In that state, Android's "Restricted Settings"
+   * greys out the Accessibility and Usage Access toggles until the user
+   * unlocks them via App Info → ⋮ → "Allow restricted settings".
+   */
+  async checkIsRestrictedInstall(): Promise<boolean> {
+    if (!this.isSupported() || !NativeAppUsage) return false;
+    try {
+      return await NativeAppUsage.checkIsRestrictedInstall();
+    } catch {
+      return false;
+    }
+  },
+
+  /**
    * Open DopaMenu's own App Info screen (Android only).
    * Required for Android 13+ sideloaded APKs where Usage Access and
    * Accessibility show "Controlled by Restricted Setting" until the user
@@ -262,6 +330,71 @@ export const appUsageService = {
     } catch (error) {
       console.error('[AppUsage] Failed to open app info:', error);
       await Linking.openSettings();
+    }
+  },
+
+  /**
+   * Start the onboarding foreground-service watcher. While the user is in
+   * Settings flipping a toggle, the FGS polls the target AppOp/service at
+   * 500ms and uses its background-activity-start allowance to yank DopaMenu
+   * back to the foreground the moment the flip happens. Falls back to a
+   * full-screen-intent notification on devices where startActivity is
+   * blocked even for FGSes (rare — some OEMs).
+   *
+   * target: 'restricted_unlock' | 'usage_access' | 'accessibility'
+   *
+   * Caller is responsible for stopping the watch via stopOnboardingWatch()
+   * when the user cancels or onboarding completes.
+   */
+  async startOnboardingWatch(target: OnboardingWatchTarget): Promise<void> {
+    if (!this.isSupported() || !NativeAppUsage?.startOnboardingWatch) return;
+    try {
+      await NativeAppUsage.startOnboardingWatch(target);
+    } catch (error) {
+      console.error('[AppUsage] startOnboardingWatch failed:', error);
+    }
+  },
+
+  async stopOnboardingWatch(): Promise<void> {
+    if (!this.isSupported() || !NativeAppUsage?.stopOnboardingWatch) return;
+    try {
+      await NativeAppUsage.stopOnboardingWatch();
+    } catch (error) {
+      console.error('[AppUsage] stopOnboardingWatch failed:', error);
+    }
+  },
+
+  /**
+   * Returns a snapshot of the current device (manufacturer, OneUI version,
+   * Android SDK, etc.). Used by onboarding to tailor the "Allow restricted
+   * settings" instructions to what the user will actually see on their
+   * device — no generic "on Samsung…" branches in the copy. On iOS or when
+   * the native module isn't available, returns null.
+   */
+  async getDeviceProfile(): Promise<DeviceProfile | null> {
+    if (!this.isSupported() || !NativeAppUsage?.getDeviceProfile) return null;
+    try {
+      return await NativeAppUsage.getDeviceProfile();
+    } catch (error) {
+      console.error('[AppUsage] getDeviceProfile failed:', error);
+      return null;
+    }
+  },
+
+  /**
+   * Tell the native detectors to ignore the given package for the next
+   * durationMs. Used when the user explicitly chose to enter a tracked app
+   * (tapped "Keep doing what I was doing", dismissed the intervention, or
+   * accepted a redirect that lands them in that app). Without this, the FGS
+   * poller + AccessibilityService re-fire on the resulting foreground flip
+   * and the user gets trapped in an intercept loop.
+   */
+  async suppressIntercept(packageName: string, durationMs: number = 30000): Promise<void> {
+    if (!this.isSupported() || !NativeAppUsage?.suppressIntercept) return;
+    try {
+      await NativeAppUsage.suppressIntercept(packageName, durationMs);
+    } catch (error) {
+      console.error('[AppUsage] suppressIntercept failed:', error);
     }
   },
 };

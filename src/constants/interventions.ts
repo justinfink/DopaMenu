@@ -1,4 +1,4 @@
-import { InterventionCandidate, ModalityVector } from '../models';
+import { InterventionCandidate, ModalityVector, RedirectAppConfig, User } from '../models';
 
 // ============================================
 // Default Intervention Candidates
@@ -314,5 +314,59 @@ export const DEFAULT_INTERVENTIONS: InterventionCandidate[] = [
 
 // The "default behavior" modality - what social media scrolling looks like
 export const SOCIAL_MEDIA_MODALITY: ModalityVector = modalities.scrollSocial;
+
+// -------------------------------------------------------------------------
+// Redirect-app interventions (auto-generated from user prefs)
+// -------------------------------------------------------------------------
+
+// Map from appCatalog.category -> a reasonable modality vector. Fallback is
+// generic "active/familiar/solo/finite" which feels like a constructive break.
+const CATEGORY_MODALITIES: Record<string, ModalityVector> = {
+  chess: { passiveActive: 0.5, novelFamiliar: 0.2, socialSolo: -0.3, finiteInfinite: -0.6, expressiveConsumptive: 0.2 },
+  reading: { passiveActive: -0.2, novelFamiliar: 0.5, socialSolo: -0.8, finiteInfinite: -0.5, expressiveConsumptive: -0.6 },
+  meditation: { passiveActive: -0.6, novelFamiliar: -0.5, socialSolo: -1, finiteInfinite: -1, expressiveConsumptive: 0 },
+  language: { passiveActive: 0.4, novelFamiliar: 0.6, socialSolo: -0.6, finiteInfinite: -0.7, expressiveConsumptive: 0.4 },
+  learning: { passiveActive: 0.4, novelFamiliar: 0.5, socialSolo: -0.6, finiteInfinite: -0.5, expressiveConsumptive: -0.2 },
+  audio: { passiveActive: -0.4, novelFamiliar: 0.2, socialSolo: -0.8, finiteInfinite: -0.4, expressiveConsumptive: -0.6 },
+  music: { passiveActive: -0.3, novelFamiliar: 0.2, socialSolo: -0.5, finiteInfinite: -0.3, expressiveConsumptive: -0.4 },
+  notes: { passiveActive: 0.6, novelFamiliar: -0.2, socialSolo: -0.9, finiteInfinite: -0.6, expressiveConsumptive: 0.9 },
+  fitness: { passiveActive: 0.9, novelFamiliar: -0.2, socialSolo: -0.5, finiteInfinite: -0.7, expressiveConsumptive: 0.3 },
+  nature: { passiveActive: 0.6, novelFamiliar: 0.4, socialSolo: -0.4, finiteInfinite: -0.5, expressiveConsumptive: -0.1 },
+  creative: { passiveActive: 0.7, novelFamiliar: 0.3, socialSolo: -0.7, finiteInfinite: -0.4, expressiveConsumptive: 0.9 },
+  productivity: { passiveActive: 0.6, novelFamiliar: -0.3, socialSolo: -0.6, finiteInfinite: -0.7, expressiveConsumptive: 0.5 },
+};
+
+const FALLBACK_MODALITY: ModalityVector = {
+  passiveActive: 0.2,
+  novelFamiliar: 0,
+  socialSolo: -0.5,
+  finiteInfinite: -0.5,
+  expressiveConsumptive: 0,
+};
+
+/** Build an InterventionCandidate from a user-selected redirect app. */
+export function redirectAppToCandidate(app: RedirectAppConfig): InterventionCandidate {
+  const modality = (app.category && CATEGORY_MODALITIES[app.category]) || FALLBACK_MODALITY;
+  return {
+    id: `redirect-${app.catalogId}`,
+    label: `Open ${app.label}`,
+    description: app.category ? `A ${app.category} break` : 'A healthier alternative',
+    modality,
+    requiredEffort: 'low',
+    contextConstraints: [],
+    surface: 'on_phone',
+    launchTarget: app.webUrl,
+    launchAppPackage: app.androidPackage,
+    launchIosScheme: app.iosScheme,
+    identityTags: [],
+    icon: 'open-outline',
+  };
+}
+
+/** Assemble the full intervention pool: defaults + user's picked redirect apps. */
+export function getInterventionPool(user: User | null): InterventionCandidate[] {
+  const picks = user?.preferences.redirectApps?.filter((a) => a.enabled) || [];
+  return [...DEFAULT_INTERVENTIONS, ...picks.map(redirectAppToCandidate)];
+}
 
 export default DEFAULT_INTERVENTIONS;

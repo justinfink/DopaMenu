@@ -5,6 +5,7 @@ import {
   User,
   IdentityAnchor,
   UserPreferences,
+  OnboardingProgress,
   DEFAULT_IDENTITY_ANCHORS,
 } from '../models';
 
@@ -25,6 +26,7 @@ interface UserState {
   removeIdentityAnchor: (anchorId: string) => void;
   updateIdentityPriority: (anchorId: string, priority: number) => void;
   updatePreferences: (preferences: Partial<UserPreferences>) => void;
+  updateOnboardingProgress: (progress: Partial<OnboardingProgress>) => void;
   setTriggerPins: (packageName: string, interventionIds: string[]) => void;
   clearTriggerPins: (packageName: string) => void;
   addQuietHours: (start: string, end: string) => void;
@@ -69,6 +71,12 @@ const defaultPreferences: UserPreferences = {
   triggerPreferences: {
     'com.instagram.android': ['int-custom-chess-seed'],
   },
+  redirectApps: [],
+  onboardingProgress: {
+    currentStep: 'welcome',
+    usageAccessTried: false,
+    restrictedUnlockVisited: false,
+  },
 };
 
 export const useUserStore = create<UserState>()(
@@ -105,7 +113,25 @@ export const useUserStore = create<UserState>()(
             ? existing.preferences.triggerPreferences
             : defaultPreferences.triggerPreferences;
 
-          if (newApps.length > 0 || !hasTriggerPrefs || needsIosBackfill) {
+          // Migration: onboardingProgress didn't exist before, so users who
+          // reach initializeUser without it are either brand-new (treat as
+          // welcome) or already past onboarding (treat as complete, so we
+          // don't yank them back into the flow on next launch).
+          const hasOnboardingProgress =
+            existing.preferences.onboardingProgress !== undefined;
+          const nextOnboardingProgress: OnboardingProgress =
+            existing.preferences.onboardingProgress ?? {
+              currentStep: existing.onboardingCompleted ? 'complete' : 'welcome',
+              usageAccessTried: false,
+              restrictedUnlockVisited: false,
+            };
+
+          if (
+            newApps.length > 0 ||
+            !hasTriggerPrefs ||
+            needsIosBackfill ||
+            !hasOnboardingProgress
+          ) {
             set({
               user: {
                 ...existing,
@@ -113,6 +139,7 @@ export const useUserStore = create<UserState>()(
                   ...existing.preferences,
                   trackedApps: [...mergedExistingApps, ...newApps],
                   triggerPreferences: nextTriggerPrefs,
+                  onboardingProgress: nextOnboardingProgress,
                 },
               },
               isLoading: false,
@@ -137,11 +164,32 @@ export const useUserStore = create<UserState>()(
       },
 
       completeOnboarding: () => {
-        set((state) => ({
-          user: state.user
-            ? { ...state.user, onboardingCompleted: true }
-            : null,
-        }));
+        set((state) => {
+          if (!state.user) return { user: null };
+          const prevProgress = state.user.preferences.onboardingProgress;
+          return {
+            user: {
+              ...state.user,
+              onboardingCompleted: true,
+              preferences: {
+                ...state.user.preferences,
+                // App detection defaults ON the moment onboarding completes.
+                // Whole-product hinges on this — we just asked the user to
+                // grant Usage Access and Accessibility, it would make no
+                // sense to then leave the feature idle until they flip it
+                // on in Settings.
+                appMonitoringEnabled: true,
+                onboardingProgress: prevProgress
+                  ? { ...prevProgress, currentStep: 'complete' }
+                  : {
+                      currentStep: 'complete',
+                      usageAccessTried: false,
+                      restrictedUnlockVisited: false,
+                    },
+              },
+            },
+          };
+        });
       },
 
       setChronotype: (chronotype) => {
@@ -217,6 +265,32 @@ export const useUserStore = create<UserState>()(
               preferences: {
                 ...state.user.preferences,
                 ...preferences,
+              },
+            },
+          };
+        });
+      },
+
+      // Merges partial OnboardingProgress onto the user's existing progress.
+      // Each onboarding screen calls this on mount to stamp its currentStep;
+      // the permissions flow additionally flips usageAccessTried / restricted-
+      // UnlockVisited as visit milestones are reached. Persisted via the
+      // zustand persist middleware so cold starts resume on the right screen.
+      updateOnboardingProgress: (progress) => {
+        set((state) => {
+          if (!state.user) return state;
+          const current: OnboardingProgress =
+            state.user.preferences.onboardingProgress ?? {
+              currentStep: 'welcome',
+              usageAccessTried: false,
+              restrictedUnlockVisited: false,
+            };
+          return {
+            user: {
+              ...state.user,
+              preferences: {
+                ...state.user.preferences,
+                onboardingProgress: { ...current, ...progress },
               },
             },
           };

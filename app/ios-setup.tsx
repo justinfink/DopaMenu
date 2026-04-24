@@ -19,6 +19,8 @@ import { Card } from '../src/components';
 import { useUserStore } from '../src/stores/userStore';
 import { screenTimeService } from '../src/services/screenTime';
 import { TrackedAppConfig } from '../src/models';
+import { buildImportShortcutUrl, iCloudUrlFor } from '../src/constants/shortcutLibrary';
+import { Linking } from 'react-native';
 import { colors, spacing, borderRadius, typography } from '../src/constants/theme';
 
 // ============================================
@@ -66,6 +68,24 @@ export default function IosSetupScreen() {
   const handleOpenShortcuts = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     await screenTimeService.openShortcutsApp();
+  };
+
+  const handleInstallShortcut = async (bundleId?: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    const url = buildImportShortcutUrl(bundleId);
+    if (url) {
+      try {
+        await Linking.openURL(url);
+        return;
+      } catch {
+        // fall through to manual flow
+      }
+    }
+    Alert.alert(
+      'One-tap install not ready yet',
+      "We'll drop into Shortcuts now — paste the URL we just copied into the 'Open URLs' action.",
+      [{ text: 'OK', onPress: () => screenTimeService.openShortcutsApp() }]
+    );
   };
 
   const handleTestDeepLink = async (bundleId?: string) => {
@@ -118,6 +138,7 @@ export default function IosSetupScreen() {
             onMarkConfigured={() => handleMarkConfigured(app.packageName)}
             onCopyUrl={handleCopyUrl}
             onOpenShortcuts={handleOpenShortcuts}
+            onInstallShortcut={() => handleInstallShortcut(app.iosBundleId)}
             onTestDeepLink={() => handleTestDeepLink(app.iosBundleId)}
           />
         ))}
@@ -150,6 +171,7 @@ interface AppSetupCardProps {
   onMarkConfigured: () => void;
   onCopyUrl: (url: string) => void;
   onOpenShortcuts: () => void;
+  onInstallShortcut: () => void;
   onTestDeepLink: () => void;
 }
 
@@ -161,10 +183,12 @@ function AppSetupCard({
   onMarkConfigured,
   onCopyUrl,
   onOpenShortcuts,
+  onInstallShortcut,
   onTestDeepLink,
 }: AppSetupCardProps) {
   const instructions = screenTimeService.getSetupInstructions(app);
   const isConfigured = !!app.iosShortcutConfigured;
+  const hasOneTapInstall = !!iCloudUrlFor(app.iosBundleId);
 
   return (
     <Card style={styles.appCard}>
@@ -180,7 +204,11 @@ function AppSetupCard({
           <View style={{ flex: 1 }}>
             <Text style={styles.appLabel}>{app.label}</Text>
             <Text style={styles.appSubLabel}>
-              {isConfigured ? 'Shortcut configured' : 'Tap to set up redirect'}
+              {isConfigured
+                ? '✓ Automation detected — you\'re all set'
+                : hasOneTapInstall
+                ? 'Tap to install automation (one tap)'
+                : 'Tap to set up redirect'}
             </Text>
           </View>
         </View>
@@ -201,67 +229,68 @@ function AppSetupCard({
 
       {expanded && (
         <View style={styles.instructionsContainer}>
-          {/* The URL to paste */}
-          <Text style={styles.urlLabel}>URL to paste into Shortcuts:</Text>
-          <TouchableOpacity
-            style={styles.urlBox}
-            onPress={() => onCopyUrl(instructions.interventionUrl)}
-          >
-            <Text style={styles.urlText} selectable numberOfLines={2}>
-              {instructions.interventionUrl}
-            </Text>
-            <Ionicons name="copy-outline" size={18} color={colors.primary} />
-          </TouchableOpacity>
-
-          {/* Step-by-step */}
-          <Text style={[styles.urlLabel, { marginTop: spacing.md }]}>Steps:</Text>
-          {instructions.steps.map((step, i) => (
-            <View key={i} style={styles.stepRow}>
-              <View style={styles.stepNumber}>
-                <Text style={styles.stepNumberText}>{i + 1}</Text>
-              </View>
-              <Text style={styles.stepText}>{step}</Text>
+          {/* Status banner — auto-detected */}
+          {isConfigured ? (
+            <View style={[styles.tipBox, { backgroundColor: '#E5F3E8', marginBottom: spacing.md }]}>
+              <Ionicons name="checkmark-circle" size={16} color="#3B7A4B" />
+              <Text style={[styles.tipText, { color: '#3B7A4B' }]}>
+                DopaMenu saw this automation fire — no action needed.
+              </Text>
             </View>
-          ))}
+          ) : null}
 
-          {/* Bonus: enable "Run Immediately" note */}
-          <View style={[styles.tipBox, { marginTop: spacing.md }]}>
-            <Ionicons name="flash" size={16} color={colors.primary} />
-            <Text style={styles.tipText}>
-              On iOS 16.4+ the automation runs silently. On older iOS, you'll see a banner you can tap to confirm.
-            </Text>
-          </View>
-
-          {/* Action row */}
-          <View style={styles.actionRow}>
-            <TouchableOpacity style={styles.secondaryButton} onPress={onTestDeepLink}>
-              <Ionicons name="flask-outline" size={16} color={colors.primary} />
-              <Text style={styles.secondaryButtonText}>Test link</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.primaryButton} onPress={onOpenShortcuts}>
-              <Ionicons name="open-outline" size={16} color={colors.textInverse} />
-              <Text style={styles.primaryButtonText}>Open Shortcuts</Text>
-            </TouchableOpacity>
-          </View>
-
+          {/* Primary action: one-tap install */}
           <TouchableOpacity
-            style={[styles.markDoneButton, isConfigured && styles.markDoneButtonActive]}
-            onPress={onMarkConfigured}
+            style={[styles.primaryButton, { alignSelf: 'stretch', justifyContent: 'center' }]}
+            onPress={onInstallShortcut}
           >
-            <Ionicons
-              name={isConfigured ? 'checkmark-circle' : 'ellipse-outline'}
-              size={20}
-              color={isConfigured ? colors.primary : colors.textSecondary}
-            />
-            <Text
-              style={[
-                styles.markDoneText,
-                isConfigured && { color: colors.primary },
-              ]}
-            >
-              {isConfigured ? "I've set this up" : "Mark as set up"}
+            <Ionicons name="download-outline" size={18} color={colors.textInverse} />
+            <Text style={styles.primaryButtonText}>
+              {hasOneTapInstall ? 'Install Shortcut (one tap)' : 'Open Shortcuts to set up'}
             </Text>
           </TouchableOpacity>
+
+          {/* Secondary: test */}
+          <TouchableOpacity
+            style={[styles.secondaryButton, { alignSelf: 'stretch', justifyContent: 'center', marginTop: spacing.sm }]}
+            onPress={onTestDeepLink}
+          >
+            <Ionicons name="flask-outline" size={16} color={colors.primary} />
+            <Text style={styles.secondaryButtonText}>Test redirect</Text>
+          </TouchableOpacity>
+
+          {/* Fallback: manual URL (only surfaced when one-tap isn't ready) */}
+          {!hasOneTapInstall ? (
+            <>
+              <Text style={[styles.urlLabel, { marginTop: spacing.md }]}>
+                Fallback — paste this URL into the Shortcut's "Open URLs" action:
+              </Text>
+              <TouchableOpacity
+                style={styles.urlBox}
+                onPress={() => onCopyUrl(instructions.interventionUrl)}
+              >
+                <Text style={styles.urlText} selectable numberOfLines={2}>
+                  {instructions.interventionUrl}
+                </Text>
+                <Ionicons name="copy-outline" size={18} color={colors.primary} />
+              </TouchableOpacity>
+              {instructions.steps.map((step, i) => (
+                <View key={i} style={styles.stepRow}>
+                  <View style={styles.stepNumber}>
+                    <Text style={styles.stepNumberText}>{i + 1}</Text>
+                  </View>
+                  <Text style={styles.stepText}>{step}</Text>
+                </View>
+              ))}
+            </>
+          ) : null}
+
+          <View style={[styles.tipBox, { marginTop: spacing.md }]}>
+            <Ionicons name="information-circle" size={16} color={colors.primary} />
+            <Text style={styles.tipText}>
+              Status updates automatically the first time the automation fires. You don't need to confirm anything.
+            </Text>
+          </View>
         </View>
       )}
     </Card>

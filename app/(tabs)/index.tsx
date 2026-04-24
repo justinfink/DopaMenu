@@ -16,7 +16,7 @@ import { useInterventionStore } from '../../src/stores/interventionStore';
 import { usePortfolioStore } from '../../src/stores/portfolioStore';
 import { useCustomInterventionsStore } from '../../src/stores/customInterventionsStore';
 import { simulateSituation, generateIntervention } from '../../src/engine/InterventionEngine';
-import { DEFAULT_INTERVENTIONS } from '../../src/constants/interventions';
+import { DEFAULT_INTERVENTIONS, getInterventionPool } from '../../src/constants/interventions';
 import { getGreeting, getTimeBucket } from '../../src/utils/helpers';
 import { analyticsService, AnalyticsEvents } from '../../src/services';
 import { colors, spacing, borderRadius, typography, shadows } from '../../src/constants/theme';
@@ -57,7 +57,7 @@ export default function DashboardScreen() {
   };
 
   const buildCandidatePool = () => [
-    ...DEFAULT_INTERVENTIONS,
+    ...getInterventionPool(user),
     ...useCustomInterventionsStore.getState().interventions,
   ];
 

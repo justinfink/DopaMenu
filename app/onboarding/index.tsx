@@ -5,10 +5,12 @@ import {
   StyleSheet,
   SafeAreaView,
   Image,
+  ScrollView,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Button } from '../../src/components';
 import { colors, spacing, typography } from '../../src/constants/theme';
+import { useResponsive } from '../../src/utils/responsive';
 
 // ============================================
 // Welcome Screen
@@ -16,23 +18,30 @@ import { colors, spacing, typography } from '../../src/constants/theme';
 // ============================================
 
 export default function WelcomeScreen() {
+  const r = useResponsive();
   const handleGetStarted = () => {
-    router.push('/onboarding/chat-intake');
+    router.push('/onboarding/pick-problem-apps');
   };
+
+  const logoSize = r.isTiny ? 72 : r.isSmall ? 96 : 120;
 
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.content}>
-        <View style={styles.logoContainer}>
+      <ScrollView
+        style={styles.content}
+        contentContainerStyle={{ paddingHorizontal: r.scale(20), paddingTop: r.vscale(32), paddingBottom: r.vscale(16) }}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={[styles.logoContainer, { marginBottom: r.vscale(24) }]}>
           <Image
             source={require('../../assets/images/icon.png')}
-            style={styles.logo}
+            style={{ width: logoSize, height: logoSize }}
             resizeMode="contain"
           />
         </View>
 
-        <Text style={styles.title}>DopaMenu</Text>
-        <Text style={styles.subtitle}>
+        <Text style={[styles.title, { fontSize: r.ms(32), marginBottom: r.vscale(8) }]}>DopaMenu</Text>
+        <Text style={[styles.subtitle, { fontSize: r.ms(16), marginBottom: r.vscale(28) }]}>
           Mindful choices at the right moments
         </Text>
 
@@ -53,7 +62,7 @@ export default function WelcomeScreen() {
             description="Conscious continuation is always an option"
           />
         </View>
-      </View>
+      </ScrollView>
 
       <View style={styles.footer}>
         <Button

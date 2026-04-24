@@ -4,7 +4,7 @@ import { useUserStore } from '../stores/userStore';
 import { useInterventionStore } from '../stores/interventionStore';
 import { useCustomInterventionsStore } from '../stores/customInterventionsStore';
 import { generateIntervention, simulateSituation } from '../engine/InterventionEngine';
-import { DEFAULT_INTERVENTIONS } from '../constants/interventions';
+import { DEFAULT_INTERVENTIONS, getInterventionPool } from '../constants/interventions';
 import { Situation, InterventionDecision } from '../models';
 
 // ============================================
@@ -61,7 +61,7 @@ export function useIntervention(): UseInterventionReturn {
       // Build merged candidate pool (built-in + user custom) so custom items are
       // eligible even for manual/urge-button triggers.
       const candidatePool = [
-        ...DEFAULT_INTERVENTIONS,
+        ...getInterventionPool(user),
         ...useCustomInterventionsStore.getState().interventions,
       ];
 

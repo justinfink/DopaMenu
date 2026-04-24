@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -8,8 +8,9 @@ import {
   TouchableOpacity,
   Switch,
   Alert,
-  Platform,
   AppState,
+  AppStateStatus,
+  Platform,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -52,57 +53,217 @@ export default function SettingsScreen() {
   const [expandedSection, setExpandedSection] = useState<string | null>(null);
   const [accessibilityGranted, setAccessibilityGranted] = useState(false);
 
-  // Check accessibility permission on mount and when screen is focused
+  // Tracks any pending single-fire AppState subscription so we never accumulate
+  // multiple listeners and always clean up on unmount.
+  const permCleanupRef = useRef<(() => void) | null>(null);
+
+  // Tracks the in-flight launchPermissionFlow invocation so the persistent
+  // AppState listener can drive auto-advance without stacking callbacks.
+  type PendingFlow = {
+    permName: 'Usage Access' | 'Accessibility';
+    stage: 'unlock' | 'target';
+    openTarget: () => Promise<unknown>;
+    check: () => Promise<boolean>;
+    watchTarget: 'usage_access' | 'accessibility';
+    onGranted: () => void | Promise<void>;
+    onDeniedOrUnchanged?: () => void;
+  };
+  const pendingFlowRef = useRef<PendingFlow | null>(null);
+
   useEffect(() => {
     appUsageService.checkAccessibilityPermission().then(setAccessibilityGranted);
+
+    // Persistent AppState listener — every foreground resume re-checks the
+    // accessibility UI and (if a permission flow is in flight) advances it.
+    const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
+      if (state !== 'active') return;
+      // Short delay so Android has time to propagate new permission state.
+      setTimeout(async () => {
+        appUsageService.checkAccessibilityPermission().then(setAccessibilityGranted);
+        const flow = pendingFlowRef.current;
+        if (!flow) return;
+        await advancePermissionFlow(flow);
+      }, 350);
+    });
+
+    return () => {
+      sub.remove();
+      permCleanupRef.current?.();
+      // Don't leave a watcher running when the settings screen unmounts.
+      void appUsageService.stopOnboardingWatch();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Shown when the user returns from OS settings and the permission is STILL
-  // not granted — the most common cause on Android 13+ sideloaded APKs is that
-  // the toggle was disabled due to "Restricted Settings". Walk them through
-  // the App Info → ⋮ → Allow restricted settings flow, which unblocks both
-  // Usage Access and Accessibility.
-  const showRestrictedSettingsFallback = (permissionName: 'Usage Access' | 'Accessibility') => {
-    Alert.alert(
-      `Still need ${permissionName}?`,
-      `If the toggle looked disabled or showed "Controlled by Restricted Setting", Android is blocking it because DopaMenu was installed outside the Play Store.\n\nTo fix it:\n1. Tap "Open App Info" below\n2. Tap ⋮ (top right) → "Allow restricted settings"\n3. Then go to Permissions → ${permissionName} and turn it on`,
-      [
-        { text: 'Not now', style: 'cancel' },
-        {
-          text: 'Open App Info',
-          onPress: () => {
-            appUsageService.openAppInfo();
-          },
-        },
-      ]
-    );
-  };
+  // Gated permission flow — Usage Access and Accessibility can't be toggled
+  // on Android 13+ sideloaded installs until the user unlocks "Restricted
+  // settings" via App Info → ⋮. The native onboarding watcher polls the
+  // relevant AppOp at 500ms and yanks DopaMenu back the moment the toggle
+  // flips; the AppState listener above is the belt-and-suspenders backup.
+  async function advancePermissionFlow(flow: PendingFlow) {
+    if (flow.stage === 'unlock') {
+      const unlocked = await appUsageService
+        .checkRestrictedSettingsGranted()
+        .catch(() => false);
+      if (unlocked) {
+        // Promote to stage 'target' and immediately open the target page.
+        flow.stage = 'target';
+        try {
+          await appUsageService.startOnboardingWatch(flow.watchTarget);
+          await flow.openTarget();
+        } catch {
+          pendingFlowRef.current = null;
+          await appUsageService.stopOnboardingWatch();
+          flow.onDeniedOrUnchanged?.();
+        }
+      }
+      return;
+    }
 
-  const handleAccessibilityPermission = async () => {
-    Alert.alert(
-      'Enable Accessibility',
-      'This lets DopaMenu detect apps like Instagram the instant they open.\n\nOn the next screen, find DopaMenu and turn on its accessibility service.\n\nIf the toggle is disabled ("Controlled by Restricted Setting"), come back here — we\'ll help you unblock it.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Continue',
-          onPress: async () => {
-            await appUsageService.requestAccessibilityPermission();
-            const subscription = AppState.addEventListener('change', async (nextState) => {
-              if (nextState === 'active') {
-                subscription.remove();
-                const granted = await appUsageService.checkAccessibilityPermission();
-                setAccessibilityGranted(granted);
-                if (!granted) {
-                  showRestrictedSettingsFallback('Accessibility');
-                }
+    // stage === 'target'
+    const granted = await flow.check().catch(() => false);
+    if (granted) {
+      pendingFlowRef.current = null;
+      await appUsageService.stopOnboardingWatch();
+      await flow.onGranted();
+    }
+    // If not granted yet, stay in the flow — user may still be in Settings
+    // or just returned without flipping. They can re-tap the row to retry.
+  }
+
+  async function launchPermissionFlow({
+    permName,
+    openTarget,
+    check,
+    onGranted,
+    onDeniedOrUnchanged,
+  }: {
+    permName: 'Usage Access' | 'Accessibility';
+    openTarget: () => Promise<unknown>;
+    check: () => Promise<boolean>;
+    onGranted: () => void | Promise<void>;
+    onDeniedOrUnchanged?: () => void;
+  }) {
+    // Already granted? Short-circuit.
+    try {
+      if (await check()) {
+        await onGranted();
+        return;
+      }
+    } catch {
+      // fall through
+    }
+
+    const watchTarget: 'usage_access' | 'accessibility' =
+      permName === 'Usage Access' ? 'usage_access' : 'accessibility';
+    const needsUnlock = await appUsageService
+      .needsRestrictedUnlock()
+      .catch(() => false);
+
+    const flow: PendingFlow = {
+      permName,
+      stage: needsUnlock ? 'unlock' : 'target',
+      openTarget,
+      check,
+      watchTarget,
+      onGranted,
+      onDeniedOrUnchanged,
+    };
+    pendingFlowRef.current = flow;
+
+    if (needsUnlock) {
+      // Stage 1 — unlock. Start the native watcher on restricted_unlock so
+      // we'll be auto-pulled back the instant the user flips the toggle;
+      // on return, advancePermissionFlow() promotes the stage and opens
+      // the target page. Copy is device-specific so we never describe a
+      // screen the user isn't looking at.
+      const device = await appUsageService
+        .getDeviceProfile()
+        .catch(() => null);
+      const isSamsungOneUI6Plus =
+        !!device?.isSamsung && device.oneUIVersion >= 6;
+      const unlockBody = isSamsungOneUI6Plus
+        ? `Android locks the ${permName} toggle until you unlock it. On the ` +
+          `next screen:\n\n` +
+          `1. Scroll down the App Info page\n` +
+          `2. Tap "Allow restricted settings" (it's a row on this page, not in a menu)\n` +
+          `3. Confirm if asked\n\n` +
+          `We'll bring you right back and open ${permName} automatically.`
+        : `Android locks the ${permName} toggle until you unlock it. On the ` +
+          `next screen:\n\n` +
+          `1. Tap ⋮ in the top-right\n` +
+          `2. Tap "Allow restricted settings"\n\n` +
+          `We'll bring you right back and open ${permName} automatically.`;
+      Alert.alert(
+        'Allow Restricted Settings',
+        unlockBody,
+        [
+          {
+            text: 'Cancel',
+            style: 'cancel',
+            onPress: () => {
+              pendingFlowRef.current = null;
+              void appUsageService.stopOnboardingWatch();
+              onDeniedOrUnchanged?.();
+            },
+          },
+          {
+            text: 'Open App Info',
+            onPress: async () => {
+              try {
+                await appUsageService.startOnboardingWatch('restricted_unlock');
+                await appUsageService.openAppInfo();
+              } catch {
+                pendingFlowRef.current = null;
+                await appUsageService.stopOnboardingWatch();
+                onDeniedOrUnchanged?.();
               }
-            });
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    // Stage 2 directly — no unlock needed.
+    Alert.alert(
+      `Enable ${permName}`,
+      `On the next screen, find DopaMenu in the list and flip ${permName} ` +
+        `on. We'll bring you right back when you're done.`,
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+          onPress: () => {
+            pendingFlowRef.current = null;
+            void appUsageService.stopOnboardingWatch();
+            onDeniedOrUnchanged?.();
+          },
+        },
+        {
+          text: 'Open Settings',
+          onPress: async () => {
+            try {
+              await appUsageService.startOnboardingWatch(watchTarget);
+              await openTarget();
+            } catch {
+              pendingFlowRef.current = null;
+              await appUsageService.stopOnboardingWatch();
+              onDeniedOrUnchanged?.();
+            }
           },
         },
       ]
     );
-  };
+  }
+
+  const handleAccessibilityPermission = () =>
+    launchPermissionFlow({
+      permName: 'Accessibility',
+      openTarget: () => appUsageService.requestAccessibilityPermission(),
+      check: () => appUsageService.checkAccessibilityPermission(),
+      onGranted: () => setAccessibilityGranted(true),
+    });
 
   if (!user) return null;
 
@@ -185,49 +346,32 @@ export default function SettingsScreen() {
 
     const newValue = !user.preferences.appMonitoringEnabled;
 
-    if (newValue) {
-      // Check permission first
-      const { granted } = await appUsageService.checkPermission();
-      if (!granted) {
-        Alert.alert(
-          'Permission Required',
-          'DopaMenu needs Usage Access permission to detect when you open certain apps. This lets us show you alternatives at the moment you need them most.\n\nOn the next screen, find DopaMenu and turn on its usage access.\n\nIf the toggle is disabled ("Controlled by Restricted Setting"), come back here — we\'ll help you unblock it.',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            {
-              text: 'Grant Permission',
-              onPress: async () => {
-                await appUsageService.requestPermission();
-                // When the user comes back from OS settings, re-check and enable if granted
-                const subscription = AppState.addEventListener('change', async (nextState) => {
-                  if (nextState === 'active') {
-                    subscription.remove();
-                    const { granted: nowGranted } = await appUsageService.checkPermission();
-                    if (nowGranted) {
-                      const enabledApps = user.preferences.trackedApps.filter(a => a.enabled);
-                      await appUsageService.startMonitoring(enabledApps);
-                      updatePreferences({ appMonitoringEnabled: true });
-                    } else {
-                      showRestrictedSettingsFallback('Usage Access');
-                    }
-                  }
-                });
-              },
-            },
-          ]
-        );
-        return;
-      }
-
-      // Permission already granted — start monitoring immediately
-      const enabledApps = user.preferences.trackedApps.filter(a => a.enabled);
-      await appUsageService.startMonitoring(enabledApps);
-    } else {
-      // Stop monitoring
+    if (!newValue) {
       await appUsageService.stopMonitoring();
+      updatePreferences({ appMonitoringEnabled: false });
+      return;
     }
 
-    updatePreferences({ appMonitoringEnabled: newValue });
+    // Turning ON — check Usage Access permission first.
+    const { granted } = await appUsageService.checkPermission();
+    if (granted) {
+      const enabledApps = user.preferences.trackedApps.filter(a => a.enabled);
+      await appUsageService.startMonitoring(enabledApps);
+      updatePreferences({ appMonitoringEnabled: true });
+      return;
+    }
+
+    // Permission not yet granted — use the shared single-pass flow.
+    await launchPermissionFlow({
+      permName: 'Usage Access',
+      openTarget: () => appUsageService.requestPermission(),
+      check: async () => (await appUsageService.checkPermission()).granted,
+      onGranted: async () => {
+        const enabledApps = user.preferences.trackedApps.filter(a => a.enabled);
+        await appUsageService.startMonitoring(enabledApps);
+        updatePreferences({ appMonitoringEnabled: true });
+      },
+    });
   };
 
   const handleTrackedAppToggle = async (packageName: string) => {
@@ -742,6 +886,47 @@ export default function SettingsScreen() {
           </View>
         </Card>
 
+        {/* Apps */}
+        <TouchableOpacity
+          style={styles.linkRow}
+          onPress={() => router.push('/onboarding/pick-problem-apps')}
+        >
+          <Ionicons name="phone-portrait-outline" size={20} color={colors.primary} />
+          <View style={styles.linkRowText}>
+            <Text style={styles.linkRowTitle}>Tracked apps</Text>
+            <Text style={styles.linkRowSub}>
+              {user.preferences.trackedApps.filter((a) => a.enabled).length} apps being watched
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.linkRow}
+          onPress={() => router.push('/onboarding/pick-redirect-apps')}
+        >
+          <Ionicons name="arrow-redo-outline" size={20} color={colors.primary} />
+          <View style={styles.linkRowText}>
+            <Text style={styles.linkRowTitle}>Redirect apps</Text>
+            <Text style={styles.linkRowSub}>
+              {(user.preferences.redirectApps || []).filter((a) => a.enabled).length} healthy alternatives picked
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+        </TouchableOpacity>
+
+        {/* Personalization (deprioritized — advanced tuning) */}
+        <TouchableOpacity
+          style={styles.linkRow}
+          onPress={() => router.push('/onboarding/chat-intake')}
+        >
+          <Ionicons name="options-outline" size={20} color={colors.primary} />
+          <View style={styles.linkRowText}>
+            <Text style={styles.linkRowTitle}>Personalization</Text>
+            <Text style={styles.linkRowSub}>Identity, frequency, tone</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+        </TouchableOpacity>
+
         {/* Danger Zone */}
         <View style={styles.dangerSection}>
           <Text style={styles.dangerTitle}>Data</Text>
@@ -971,6 +1156,26 @@ const styles = StyleSheet.create({
   infoDescription: {
     fontSize: typography.sizes.sm,
     color: colors.textSecondary,
+  },
+  linkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    padding: spacing.md,
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.md,
+    marginBottom: spacing.sm,
+  },
+  linkRowText: { flex: 1 },
+  linkRowTitle: {
+    fontSize: typography.sizes.md,
+    fontWeight: typography.weights.semibold,
+    color: colors.textPrimary,
+  },
+  linkRowSub: {
+    fontSize: typography.sizes.sm,
+    color: colors.textSecondary,
+    marginTop: 2,
   },
   dangerSection: {
     marginBottom: spacing.lg,

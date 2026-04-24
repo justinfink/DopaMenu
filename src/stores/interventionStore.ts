@@ -17,6 +17,11 @@ interface InterventionState {
   // Current active intervention (if any)
   activeIntervention: InterventionDecision | null;
   activeSituation: Situation | null;
+  // Package name of the app the user was trying to open when the intervention
+  // fired. Used by the intervention screen's "continue what I was doing"
+  // fallback so we can launch back into the original app even when it isn't
+  // in the hard-coded catalog (custom tracked apps).
+  activeTriggerPackage: string | null;
 
   // History for learning
   recentOutcomes: Outcome[];
@@ -33,7 +38,7 @@ interface InterventionState {
   continuedCount: number;
 
   // Actions
-  showIntervention: (decision: InterventionDecision, situation: Situation) => void;
+  showIntervention: (decision: InterventionDecision, situation: Situation, triggerPackage?: string) => void;
   recordOutcome: (action: OutcomeAction, followThrough?: boolean) => void;
   dismissIntervention: () => void;
   clearActiveIntervention: () => void;
@@ -51,6 +56,7 @@ export const useInterventionStore = create<InterventionState>()(
     (set, get) => ({
       activeIntervention: null,
       activeSituation: null,
+      activeTriggerPackage: null,
       recentOutcomes: [],
       interventionHistory: [],
       lastInterventionTime: null,
@@ -60,10 +66,11 @@ export const useInterventionStore = create<InterventionState>()(
       dismissedCount: 0,
       continuedCount: 0,
 
-      showIntervention: (decision, situation) => {
+      showIntervention: (decision, situation, triggerPackage) => {
         set((state) => ({
           activeIntervention: decision,
           activeSituation: situation,
+          activeTriggerPackage: triggerPackage ?? null,
           interventionHistory: [
             decision,
             ...state.interventionHistory.slice(0, MAX_HISTORY - 1),
@@ -91,6 +98,7 @@ export const useInterventionStore = create<InterventionState>()(
           lastInterventionTime: Date.now(),
           activeIntervention: null,
           activeSituation: null,
+          activeTriggerPackage: null,
           acceptedCount:
             action === 'accepted'
               ? state.acceptedCount + 1
@@ -117,6 +125,7 @@ export const useInterventionStore = create<InterventionState>()(
         set({
           activeIntervention: null,
           activeSituation: null,
+          activeTriggerPackage: null,
         });
       },
 
@@ -142,6 +151,7 @@ export const useInterventionStore = create<InterventionState>()(
         set({
           activeIntervention: null,
           activeSituation: null,
+          activeTriggerPackage: null,
           recentOutcomes: [],
           interventionHistory: [],
           lastInterventionTime: null,

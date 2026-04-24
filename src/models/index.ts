@@ -38,15 +38,49 @@ export interface TrackedAppConfig {
   packageName: string;
   label: string;
   enabled: boolean;
-  // iOS bundle identifier for the Shortcuts "App is Opened" automation
-  // trigger. Example: 'com.burbn.instagram' for Instagram. Optional because
-  // older persisted users may not have it until migration; also not every
-  // tracked app has a known bundle id.
   iosBundleId?: string;
-  // True once the user has told DopaMenu they've created the Shortcuts
-  // automation for this app. Used to drive the iOS setup checklist. This
-  // is self-reported — we cannot verify the automation exists.
+  // Stable id from appCatalog, if this tracked app corresponds to a known entry.
+  catalogId?: string;
+  // Category string from appCatalog (social, video, etc.) — used for smart
+  // redirect suggestions (e.g. for a social trigger, prefer expressive redirects).
+  category?: string;
+  // True once setup automation fires at least once (auto-detected via deep link).
+  // Kept for iOS Shortcuts path; Android doesn't need this.
   iosShortcutConfigured?: boolean;
+}
+
+export interface RedirectAppConfig {
+  // Stable id from appCatalog
+  catalogId: string;
+  label: string;
+  enabled: boolean;
+  category?: string;
+  iosScheme?: string;
+  iosBundleId?: string;
+  androidPackage?: string;
+  webUrl: string;
+}
+
+export type OnboardingStepKey =
+  | 'welcome'
+  | 'pick-problem-apps'
+  | 'pick-redirect-apps'
+  | 'permissions'
+  | 'complete';
+
+// Persisted onboarding state. Lives on UserPreferences so it survives process
+// death — without this, the user is kicked back to the welcome screen if the
+// OS kills the app while they're in Settings granting permissions.
+export interface OnboardingProgress {
+  currentStep: OnboardingStepKey;
+  // Permissions sub-flow: once true, the user has been out to Usage Access at
+  // least once (so the "try" step on Android 13+ can advance even if the user
+  // hit a restricted-settings block and didn't actually flip the toggle).
+  usageAccessTried: boolean;
+  // Once true, the user has visited App Info → Allow restricted settings at
+  // least once (so the "unlock" step can auto-advance regardless of whether
+  // we can functionally probe the AppOp).
+  restrictedUnlockVisited: boolean;
 }
 
 export interface UserPreferences {
@@ -62,12 +96,18 @@ export interface UserPreferences {
   // App usage monitoring (Android only)
   appMonitoringEnabled: boolean;
   trackedApps: TrackedAppConfig[];
+  // User-picked healthy-alternative apps. Populated during onboarding and
+  // managed in Settings. Feeds auto-generated redirect interventions.
+  redirectApps?: RedirectAppConfig[];
   // Per-trigger pinned interventions.
   // Map of tracked app packageName → ordered intervention IDs shown as top options
   // when that app triggers an intercept. Interventions can be either built-in
   // (from DEFAULT_INTERVENTIONS) or custom (from customInterventionsStore).
   // Optional because older persisted users may not have it until migration.
   triggerPreferences?: Record<string, string[]>;
+  // Persisted onboarding state. Optional because older persisted users predate
+  // the field — userStore's initializeUser backfills it.
+  onboardingProgress?: OnboardingProgress;
 }
 
 export interface TimeRange {

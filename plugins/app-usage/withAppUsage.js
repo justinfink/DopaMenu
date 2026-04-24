@@ -50,6 +50,19 @@ function withAppUsageManifest(config) {
       });
     }
 
+    // Full-screen-intent notification fallback: when direct startActivity is
+    // blocked by Android 12+ background-start restrictions (user hasn't granted
+    // Accessibility), a full-screen-intent notification pops the intervention
+    // UI over the lock/home screen. Works without SYSTEM_ALERT_WINDOW.
+    const hasFullScreenPerm = manifest['uses-permission'].some(
+      (perm) => perm.$['android:name'] === 'android.permission.USE_FULL_SCREEN_INTENT'
+    );
+    if (!hasFullScreenPerm) {
+      manifest['uses-permission'].push({
+        $: { 'android:name': 'android.permission.USE_FULL_SCREEN_INTENT' },
+      });
+    }
+
     // Add the monitoring service
     const application = manifest.application[0];
     if (!application.service) {
@@ -77,7 +90,9 @@ function withAppUsageManifest(config) {
       });
     }
 
-    // Add AccessibilityService declaration
+    // Add AccessibilityService declaration. android:label is REQUIRED by the
+    // OS — without it the Accessibility settings screen shows "This service
+    // is malfunctioning" the moment you toggle it on.
     const hasAccessibilityService = application.service?.some(
       (svc) => svc.$['android:name'] === '.DopaMenuAccessibilityService'
     );
@@ -88,6 +103,7 @@ function withAppUsageManifest(config) {
           'android:name': '.DopaMenuAccessibilityService',
           'android:permission': 'android.permission.BIND_ACCESSIBILITY_SERVICE',
           'android:exported': 'true',
+          'android:label': '@string/dopamenu_accessibility_label',
         },
         'intent-filter': [{ action: [{ $: { 'android:name': 'android.accessibilityservice.AccessibilityService' } }] }],
         'meta-data': [{
@@ -175,6 +191,19 @@ function withAppUsageNativeCode(config) {
         getAccessibilityConfigXml()
       );
 
+      // Write string resources for the AccessibilityService label and description.
+      // Missing android:description is the #1 cause of "This service is
+      // malfunctioning" when the user flips the toggle — Android requires both
+      // strings to be resolvable before it will bind the service.
+      const resValuesDir = path.join(projectRoot, 'android', 'app', 'src', 'main', 'res', 'values');
+      if (!fs.existsSync(resValuesDir)) {
+        fs.mkdirSync(resValuesDir, { recursive: true });
+      }
+      fs.writeFileSync(
+        path.join(resValuesDir, 'dopamenu_strings.xml'),
+        getDopaMenuStringsXml()
+      );
+
       return config;
     },
   ]);
@@ -196,6 +225,7 @@ import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
 import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import java.util.concurrent.ConcurrentHashMap
 
 class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
@@ -205,6 +235,31 @@ class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
         // Public so DopaMenuAccessibilityService can read/write these
         var monitoringPackages: List<String> = emptyList()
         var instance: DopaMenuAppUsageModule? = null
+
+        // Cross-service suppression map. Keyed by packageName, value is the
+        // absolute epoch millis until which BOTH the FGS polling path AND the
+        // AccessibilityService must skip firing an intercept for that package.
+        //
+        // Why we need this: when a user taps "Continue what I was doing" on
+        // the intervention screen, JS launches the trigger app (e.g. Instagram)
+        // via an Android intent. Without suppression, the FGS poller sees
+        // Instagram become foreground one poll later and fires another
+        // intercept — the user ends up in an infinite ping-pong between the
+        // app they wanted to use and the DopaMenu modal.
+        //
+        // JS calls suppressIntercept(packageName, durationMs) when the user
+        // explicitly chose a non-intercepting action (continue / dismiss /
+        // accept an alternative). 30s is the standard window.
+        val suppressedUntil: ConcurrentHashMap<String, Long> = ConcurrentHashMap()
+
+        fun isSuppressed(packageName: String): Boolean {
+            val until = suppressedUntil[packageName] ?: return false
+            if (System.currentTimeMillis() >= until) {
+                suppressedUntil.remove(packageName)
+                return false
+            }
+            return true
+        }
 
         /** Called by DopaMenuAccessibilityService on the main thread */
         fun onAccessibilityAppDetected(packageName: String) {
@@ -303,6 +358,23 @@ class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
         }
     }
 
+    // JS calls this when the user has explicitly chosen to continue into a
+    // tracked app (tap "Keep doing what I was doing", "Launch anyway", or
+    // accept a redirect that lands them back in the trigger app). Without
+    // this window, the FGS poller and AccessibilityService would re-intercept
+    // the same foreground transition and trap the user in a ping-pong loop
+    // between the trigger app and the DopaMenu modal.
+    @ReactMethod
+    fun suppressIntercept(packageName: String, durationMs: Double, promise: Promise) {
+        try {
+            val until = System.currentTimeMillis() + durationMs.toLong()
+            suppressedUntil[packageName] = until
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
+
     private fun hasUsageStatsPermission(): Boolean {
         val appOps = reactApplicationContext.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
         val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -346,6 +418,61 @@ class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
         }
     }
 
+    // Returns true if the user has already tapped ⋮ → "Allow restricted settings"
+    // for this app in App Info. Uses AppOpsManager op "android:access_restricted_settings"
+    // (Android 13+ only; returns true on earlier versions since restriction doesn't apply).
+    // With this signal we know whether to show the App Info unlock step proactively.
+    @ReactMethod
+    fun checkRestrictedSettingsGranted(promise: Promise) {
+        try {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                promise.resolve(true)
+                return
+            }
+            val appOps = reactApplicationContext.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+            val mode = appOps.unsafeCheckOpNoThrow(
+                "android:access_restricted_settings",
+                Process.myUid(),
+                reactApplicationContext.packageName
+            )
+            promise.resolve(mode == AppOpsManager.MODE_ALLOWED)
+        } catch (e: Exception) {
+            // Hidden API unavailable — assume not granted so we show guidance
+            promise.resolve(false)
+        }
+    }
+
+    // Returns true when DopaMenu was NOT installed via the Play Store AND the
+    // device is Android 13+ (TIRAMISU). On those devices, sideloaded apps have
+    // "Restricted Settings" active, which greys out the Accessibility and Usage
+    // Access toggles until the user taps App Info → ⋮ → Allow restricted settings.
+    @ReactMethod
+    fun checkIsRestrictedInstall(promise: Promise) {
+        try {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                promise.resolve(false)
+                return
+            }
+            val pm = reactApplicationContext.packageManager
+            val pkg = reactApplicationContext.packageName
+            val installer = try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    pm.getInstallSourceInfo(pkg).installingPackageName
+                } else {
+                    @Suppress("DEPRECATION")
+                    pm.getInstallerPackageName(pkg)
+                }
+            } catch (e: Exception) {
+                null
+            }
+            // com.android.vending = Play Store; anything else (null, ADB, file manager) = sideloaded
+            promise.resolve(installer != "com.android.vending")
+        } catch (e: Exception) {
+            // If we can't determine, assume restricted so the UI shows guidance
+            promise.resolve(true)
+        }
+    }
+
     // Opens DopaMenu's own App Info screen. This is where Android 13+ surfaces
     // the ⋮ menu with "Allow restricted settings", which is required before
     // sideloaded apps can receive Usage Access or Accessibility permissions.
@@ -357,6 +484,100 @@ class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
             intent.data = Uri.parse("package:\$pkg")
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             reactApplicationContext.startActivity(intent)
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
+
+    // Kicks off the foreground-service-driven onboarding watch. While JS is
+    // backgrounded (user is in Settings), the service polls the target AppOp
+    // every 500ms and, when it flips, uses its BAL-exempt startActivity
+    // permission to yank DopaMenu back to the foreground. target must be one
+    // of: "restricted_unlock", "usage_access", "accessibility".
+    @ReactMethod
+    fun startOnboardingWatch(target: String, promise: Promise) {
+        try {
+            val intent = Intent(reactApplicationContext, AppUsageMonitorService::class.java).apply {
+                action = AppUsageMonitorService.ACTION_START_ONBOARDING_WATCH
+                putExtra("target", target)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                reactApplicationContext.startForegroundService(intent)
+            } else {
+                reactApplicationContext.startService(intent)
+            }
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
+
+    // Returns a map describing the current device so JS can adapt onboarding
+    // copy to what the user will actually see in Settings. The ⋮ menu for
+    // "Allow restricted settings" is universal on Android 13+ sideloads, but
+    // Samsung OneUI 6+ surfaces the same control as a direct row on the App
+    // Info page instead of hiding it behind ⋮. We detect that and rewrite
+    // the instructions device-by-device rather than saying "on Samsung…".
+    @ReactMethod
+    fun getDeviceProfile(promise: Promise) {
+        try {
+            val manufacturer = (Build.MANUFACTURER ?: "").lowercase()
+            val brand = (Build.BRAND ?: "").lowercase()
+            val model = Build.MODEL ?: ""
+            val sdkInt = Build.VERSION.SDK_INT
+            val isSamsung = manufacturer.contains("samsung") || brand.contains("samsung")
+            val isPixel = brand.contains("google") || model.lowercase().contains("pixel")
+            val isOnePlus = manufacturer.contains("oneplus") || brand.contains("oneplus")
+            val isXiaomi = manufacturer.contains("xiaomi") || brand.contains("xiaomi") ||
+                brand.contains("redmi") || brand.contains("poco")
+
+            // Samsung OneUI version detection. OneUI is layered on top of Android;
+            // its version is exposed via SystemProperties "ro.build.version.oneui"
+            // on newer builds, fallback to "ro.build.version.sem_platform_int".
+            // OneUI 6 = Android 14 base, OneUI 6.1/7+ surface restricted-unlock
+            // as a direct row on App Info rather than hiding it in ⋮.
+            var oneUIVersion = 0
+            if (isSamsung) {
+                oneUIVersion = try {
+                    val cls = Class.forName("android.os.SystemProperties")
+                    val get = cls.getMethod("get", String::class.java, String::class.java)
+                    val semInt = (get.invoke(null, "ro.build.version.sem_platform_int", "0") as? String)
+                        ?.toIntOrNull() ?: 0
+                    // sem_platform_int is (oneUIMajor + 90) * 10000 for OneUI 3+
+                    // e.g. OneUI 6 → 150000, OneUI 6.1 → 150100, OneUI 7 → 160000
+                    if (semInt >= 130000) (semInt / 10000) - 90 else 0
+                } catch (e: Exception) { 0 }
+            }
+
+            val map = Arguments.createMap().apply {
+                putString("manufacturer", Build.MANUFACTURER ?: "")
+                putString("brand", Build.BRAND ?: "")
+                putString("model", model)
+                putInt("sdkInt", sdkInt)
+                putBoolean("isSamsung", isSamsung)
+                putBoolean("isPixel", isPixel)
+                putBoolean("isOnePlus", isOnePlus)
+                putBoolean("isXiaomi", isXiaomi)
+                putInt("oneUIVersion", oneUIVersion)
+            }
+            promise.resolve(map)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
+
+    @ReactMethod
+    fun stopOnboardingWatch(promise: Promise) {
+        try {
+            val intent = Intent(reactApplicationContext, AppUsageMonitorService::class.java).apply {
+                action = AppUsageMonitorService.ACTION_STOP_ONBOARDING_WATCH
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                reactApplicationContext.startForegroundService(intent)
+            } else {
+                reactApplicationContext.startService(intent)
+            }
             promise.resolve(null)
         } catch (e: Exception) {
             promise.reject("ERROR", e.message)
@@ -411,6 +632,7 @@ class DopaMenuAppUsagePackage : ReactPackage {
 function getServiceCode(packageName) {
   return `package ${packageName}
 
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.*
 import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
@@ -421,6 +643,9 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.Process
+import android.util.Log
+import android.view.accessibility.AccessibilityManager
 import androidx.core.app.NotificationCompat
 
 class AppUsageMonitorService : Service() {
@@ -430,10 +655,27 @@ class AppUsageMonitorService : Service() {
     private var monitoringPackages: List<String> = emptyList()
     private var lastForegroundApp: String? = null
 
+    // Onboarding-watch state. Separate from the polling runnable so we can run
+    // concurrently or standalone. Target is one of: restricted_unlock,
+    // usage_access, accessibility.
+    private var onboardingRunnable: Runnable? = null
+    private var onboardingTarget: String? = null
+    private var onboardingStartTime: Long = 0L
+
     companion object {
         private const val CHANNEL_ID = "app_monitoring"
         private const val NOTIFICATION_ID = 1001
         private const val CHECK_INTERVAL = 2000L // Check every 2 seconds
+
+        // Onboarding watch: poll faster so auto-return feels instant once the
+        // user flips a toggle. 5-minute ceiling so we can't run forever if the
+        // user gets distracted or denies the permission.
+        private const val ONBOARDING_POLL_INTERVAL = 500L
+        private const val ONBOARDING_TIMEOUT_MS = 5L * 60L * 1000L
+        const val ACTION_START_ONBOARDING_WATCH = "${packageName}.ONBOARDING_WATCH_START"
+        const val ACTION_STOP_ONBOARDING_WATCH = "${packageName}.ONBOARDING_WATCH_STOP"
+        private const val ONBOARDING_RETURN_CHANNEL = "onboarding_return"
+        private const val ONBOARDING_RETURN_NOTIFICATION_ID = 9999
     }
 
     override fun onCreate() {
@@ -443,6 +685,29 @@ class AppUsageMonitorService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val action = intent?.action
+
+        // Onboarding watch: start/stop the permission poller. We always call
+        // startForeground so the service is allowed to poll + startActivity
+        // from the background (Android 12+ BAL exemption for FGSes).
+        if (action == ACTION_START_ONBOARDING_WATCH) {
+            val target = intent.getStringExtra("target")
+            if (target != null) {
+                startForeground(NOTIFICATION_ID, createNotification())
+                startOnboardingWatch(target)
+            }
+            return START_NOT_STICKY
+        }
+        if (action == ACTION_STOP_ONBOARDING_WATCH) {
+            stopOnboardingWatch()
+            // If nothing else is running, tear the service down so we don't
+            // leave a stale "DopaMenu Active" notification hanging around.
+            if (monitoringPackages.isEmpty() && runnable == null) {
+                stopSelf()
+            }
+            return START_NOT_STICKY
+        }
+
         intent?.getStringArrayListExtra("packages")?.let {
             monitoringPackages = it
         }
@@ -469,6 +734,7 @@ class AppUsageMonitorService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         stopMonitoring()
+        stopOnboardingWatch()
     }
 
     private fun createNotificationChannel() {
@@ -547,6 +813,11 @@ class AppUsageMonitorService : Service() {
             monitoringPackages.contains(lastResumedPackage)) {
 
             lastForegroundApp = lastResumedPackage
+            // Suppression window: when JS just told us the user explicitly
+            // chose to enter this app, skip the intercept so we don't loop.
+            if (DopaMenuAppUsageModule.isSuppressed(lastResumedPackage)) {
+                return
+            }
             onTrackedAppLaunched(lastResumedPackage)
         } else if (lastResumedPackage != null) {
             lastForegroundApp = lastResumedPackage
@@ -554,33 +825,35 @@ class AppUsageMonitorService : Service() {
     }
 
     private fun onTrackedAppLaunched(packageName: String) {
-        // Deep link into the intervention screen
+        // Deep link into the intervention screen.
+        // NEW_TASK + REORDER_TO_FRONT: brings the existing DopaMenu task to
+        // front without destroying the existing activity stack. CLEAR_TOP used
+        // to be here but it resets the root activity, which wiped the user's
+        // onboarding progress mid-flow — never worth that tradeoff.
         val deepLink = Uri.parse("dopamenu://intervention?trigger=app_intercept&package=\${packageName}")
         val intent = Intent(Intent.ACTION_VIEW, deepLink).apply {
             setPackage(this@AppUsageMonitorService.packageName)
             addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
-                Intent.FLAG_ACTIVITY_CLEAR_TOP
+                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
             )
         }
 
         // Overlay-style intercept: bring DopaMenu to the foreground directly.
-        // A running foreground service is permitted to launch activities even
-        // from background context on modern Android. If the platform blocks
-        // this (some OEMs/versions), the notification fallback below still
-        // lets the user tap in.
+        // A running foreground service CAN launch activities on modern Android,
+        // but Android 12+ enforces strict background-activity-start rules —
+        // startActivity here often throws on Pixel / AOSP without the
+        // Accessibility service also enabled. When it fails we fall back to a
+        // full-screen-intent notification, which the OS treats as an
+        // overlay-equivalent and surfaces the DopaMenu UI automatically.
         var launchedDirectly = false
         try {
             startActivity(intent)
             launchedDirectly = true
-        } catch (_: Exception) {
-            // Fall through to notification
+        } catch (e: Exception) {
+            Log.w("DopaMenu", "Direct startActivity blocked, using full-screen intent: \${e.message}")
         }
 
-        // Always also post a high-priority notification as a fallback/backup
-        // path. On devices where the direct launch succeeded this is a
-        // redundant but harmless reminder the user can swipe away.
         val pendingIntent = PendingIntent.getActivity(
             this, System.currentTimeMillis().toInt(), intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
@@ -598,23 +871,205 @@ class AppUsageMonitorService : Service() {
                 "app_detection",
                 "App Detection",
                 NotificationManager.IMPORTANCE_HIGH
-            ).apply { setShowBadge(false) }
+            ).apply {
+                setShowBadge(false)
+                setBypassDnd(true)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            }
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
 
-        // If we already launched DopaMenu directly, make the fallback
-        // notification lower priority so it doesn't also heads-up.
-        val notif = NotificationCompat.Builder(this, "app_detection")
+        val builder = NotificationCompat.Builder(this, "app_detection")
             .setContentTitle("DopaMenu")
             .setContentText(messages.random())
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .setContentIntent(pendingIntent)
-            .setPriority(if (launchedDirectly) NotificationCompat.PRIORITY_LOW else NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setPriority(if (launchedDirectly) NotificationCompat.PRIORITY_LOW else NotificationCompat.PRIORITY_MAX)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setAutoCancel(true)
-            .build()
 
-        getSystemService(NotificationManager::class.java)
-            .notify(System.currentTimeMillis().toInt(), notif)
+        // Full-screen intent: when direct startActivity was blocked, ask the OS
+        // to surface the intervention as if it were a full-screen alert. This
+        // requires USE_FULL_SCREEN_INTENT in the manifest (granted by default
+        // on Android <14; prompted at first use on Android 14+).
+        if (!launchedDirectly) {
+            builder.setFullScreenIntent(pendingIntent, true)
+        }
+
+        try {
+            getSystemService(NotificationManager::class.java)
+                .notify(System.currentTimeMillis().toInt(), builder.build())
+        } catch (e: Exception) {
+            Log.e("DopaMenu", "Notification post failed: \${e.message}")
+        }
+    }
+
+    // ─── Onboarding watch ───────────────────────────────────────────────────
+    //
+    // During onboarding, the app sends the user out to Settings to flip a
+    // toggle (Allow restricted settings, Usage Access, or Accessibility).
+    // Android doesn't auto-return from Settings, and in-app permission re-
+    // checks can lag or return stale data on some devices. So we poll from
+    // here at 500ms intervals and, the moment the target flips to granted,
+    // startActivity DopaMenu to yank the user back in. Works because FGSes
+    // retain BAL permission on Android 12+.
+    //
+    // If startActivity is blocked (rare — OEM variants with stricter BAL),
+    // we fall back to a full-screen-intent notification.
+
+    private fun startOnboardingWatch(target: String) {
+        stopOnboardingWatch()
+        onboardingTarget = target
+        onboardingStartTime = System.currentTimeMillis()
+        onboardingRunnable = object : Runnable {
+            override fun run() {
+                val currentTarget = onboardingTarget ?: return
+                val granted = try {
+                    checkOnboardingTargetGranted(currentTarget)
+                } catch (e: Exception) {
+                    Log.w("DopaMenu", "Onboarding check failed: \${e.message}")
+                    false
+                }
+                if (granted) {
+                    bringDopaMenuForward(currentTarget)
+                    stopOnboardingWatch()
+                    if (monitoringPackages.isEmpty() && runnable == null) {
+                        stopSelf()
+                    }
+                    return
+                }
+                if (System.currentTimeMillis() - onboardingStartTime > ONBOARDING_TIMEOUT_MS) {
+                    Log.w("DopaMenu", "Onboarding watch timed out for \$currentTarget")
+                    stopOnboardingWatch()
+                    if (monitoringPackages.isEmpty() && runnable == null) {
+                        stopSelf()
+                    }
+                    return
+                }
+                handler?.postDelayed(this, ONBOARDING_POLL_INTERVAL)
+            }
+        }
+        handler?.post(onboardingRunnable!!)
+    }
+
+    private fun stopOnboardingWatch() {
+        onboardingRunnable?.let { handler?.removeCallbacks(it) }
+        onboardingRunnable = null
+        onboardingTarget = null
+    }
+
+    private fun checkOnboardingTargetGranted(target: String): Boolean = when (target) {
+        "restricted_unlock" -> checkRestrictedSettingsGrantedLocal()
+        "usage_access" -> hasUsageStatsPermissionLocal()
+        "accessibility" -> hasAccessibilityServiceLocal()
+        else -> false
+    }
+
+    private fun checkRestrictedSettingsGrantedLocal(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true
+        return try {
+            val appOps = getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+            val mode = appOps.unsafeCheckOpNoThrow(
+                "android:access_restricted_settings",
+                Process.myUid(),
+                packageName
+            )
+            mode == AppOpsManager.MODE_ALLOWED
+        } catch (e: Exception) { false }
+    }
+
+    private fun hasUsageStatsPermissionLocal(): Boolean {
+        return try {
+            val appOps = getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+            val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                appOps.unsafeCheckOpNoThrow(
+                    AppOpsManager.OPSTR_GET_USAGE_STATS,
+                    Process.myUid(),
+                    packageName
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                appOps.checkOpNoThrow(
+                    AppOpsManager.OPSTR_GET_USAGE_STATS,
+                    Process.myUid(),
+                    packageName
+                )
+            }
+            mode == AppOpsManager.MODE_ALLOWED
+        } catch (e: Exception) { false }
+    }
+
+    private fun hasAccessibilityServiceLocal(): Boolean {
+        return try {
+            val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
+            val enabled = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
+            enabled.any { it.resolveInfo.serviceInfo.packageName == packageName }
+        } catch (e: Exception) { false }
+    }
+
+    private fun bringDopaMenuForward(target: String) {
+        // REORDER_TO_FRONT preserves the activity stack (keeps the user on
+        // their current onboarding screen). CLEAR_TOP would rebuild MainActivity
+        // from scratch — that's what was sending users back to the welcome
+        // screen every time they returned from Settings.
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+            )
+            putExtra("onboarding_return", target)
+        } ?: return
+
+        // Best-effort direct launch. We DON'T early-return on success because
+        // Android 12+ BAL silently drops startActivity from a FGS in many
+        // situations without throwing — no exception, no foreground change,
+        // and the user is stuck in Settings with no way back. Posting the
+        // full-screen-intent notification below unconditionally is cheap and
+        // guarantees a return path the user can see.
+        try {
+            startActivity(launchIntent)
+        } catch (e: Exception) {
+            Log.w("DopaMenu", "Onboarding return startActivity blocked: \${e.message}")
+        }
+
+        // Always post the full-screen-intent notification. On Android 14+ this
+        // requires USE_FULL_SCREEN_INTENT (already declared in the manifest)
+        // and for most users it surfaces DopaMenu immediately as if it were
+        // an incoming call.
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = NotificationChannel(
+                    ONBOARDING_RETURN_CHANNEL,
+                    "Setup Return",
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    setShowBadge(false)
+                    setBypassDnd(true)
+                    lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                }
+                getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                this, 0, launchIntent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            val notif = NotificationCompat.Builder(this, ONBOARDING_RETURN_CHANNEL)
+                .setContentTitle("DopaMenu setup ready")
+                .setContentText("Tap to continue where you left off")
+                .setSmallIcon(android.R.drawable.ic_menu_compass)
+                .setContentIntent(pendingIntent)
+                .setCategory(NotificationCompat.CATEGORY_CALL)
+                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setAutoCancel(true)
+                .setFullScreenIntent(pendingIntent, true)
+                .build()
+            getSystemService(NotificationManager::class.java)
+                .notify(ONBOARDING_RETURN_NOTIFICATION_ID, notif)
+        } catch (e: Exception) {
+            Log.e("DopaMenu", "Onboarding return notification failed: \${e.message}")
+        }
     }
 }
 `;
@@ -627,6 +1082,7 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Intent
 import android.net.Uri
+import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 
 // AccessibilityService is the overlay mechanism. When it detects a tracked app
@@ -642,32 +1098,58 @@ class DopaMenuAccessibilityService : AccessibilityService() {
     private var lastInterceptTime: Long = 0L
 
     override fun onServiceConnected() {
-        serviceInfo = AccessibilityServiceInfo().apply {
-            eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
-            feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-            notificationTimeout = 100
+        // Every path in here is wrapped — a single uncaught throw at service-
+        // connect time will mark the service as malfunctioning and bounce the
+        // toggle back to off. Config XML already declares the same values; this
+        // is only a belt-and-braces overwrite.
+        try {
+            serviceInfo = AccessibilityServiceInfo().apply {
+                eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+                feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
+                notificationTimeout = 100
+            }
+        } catch (e: Throwable) {
+            Log.e("DopaMenu", "onServiceConnected failed: \${e.message}", e)
         }
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent) {
-        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
-        val pkg = event.packageName?.toString() ?: return
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        // Wrap the whole handler. If anything throws, the OS treats the service
+        // as misbehaving and can disable it — we must never let an exception
+        // escape this callback.
+        try {
+            if (event == null) return
+            if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+            val pkg = event.packageName?.toString() ?: return
 
-        // Only intercept apps the user is tracking
-        if (!DopaMenuAppUsageModule.monitoringPackages.contains(pkg)) return
+            // Only intercept apps the user is tracking
+            if (!DopaMenuAppUsageModule.monitoringPackages.contains(pkg)) return
 
-        // Ignore repeats within 5s for the same package — stops us from
-        // launching DopaMenu over itself on activity transitions.
-        val now = System.currentTimeMillis()
-        if (pkg == lastInterceptedPackage && now - lastInterceptTime < 5000L) return
-        lastInterceptedPackage = pkg
-        lastInterceptTime = now
+            // Suppression window set by JS when the user explicitly chose to
+            // enter this app (e.g. tapped "Keep doing what I was doing"). If
+            // we don't honor it, we loop: trigger app opens → intercept →
+            // user continues → trigger app opens → intercept → …
+            if (DopaMenuAppUsageModule.isSuppressed(pkg)) return
 
-        // Forward to the module so JS can record analytics if foregrounded
-        DopaMenuAppUsageModule.onAccessibilityAppDetected(pkg)
+            // Ignore repeats within 5s for the same package — stops us from
+            // launching DopaMenu over itself on activity transitions.
+            val now = System.currentTimeMillis()
+            if (pkg == lastInterceptedPackage && now - lastInterceptTime < 5000L) return
+            lastInterceptedPackage = pkg
+            lastInterceptTime = now
 
-        // Bring DopaMenu to the foreground — this is the overlay behavior.
-        bringDopaMenuForward(pkg)
+            // Forward to the module so JS can record analytics if foregrounded
+            try {
+                DopaMenuAppUsageModule.onAccessibilityAppDetected(pkg)
+            } catch (e: Throwable) {
+                Log.w("DopaMenu", "JS notify failed: \${e.message}")
+            }
+
+            // Bring DopaMenu to the foreground — this is the overlay behavior.
+            bringDopaMenuForward(pkg)
+        } catch (e: Throwable) {
+            Log.e("DopaMenu", "onAccessibilityEvent crash: \${e.message}", e)
+        }
     }
 
     private fun bringDopaMenuForward(sourcePackage: String) {
@@ -675,32 +1157,53 @@ class DopaMenuAccessibilityService : AccessibilityService() {
             val deepLink = Uri.parse("dopamenu://intervention?trigger=app_intercept&package=\$sourcePackage")
             val intent = Intent(Intent.ACTION_VIEW, deepLink).apply {
                 setPackage(applicationContext.packageName)
+                // REORDER_TO_FRONT (no CLEAR_TOP) so we don't obliterate the
+                // user's current screen — especially during onboarding.
                 addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
-                    Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
                 )
             }
             startActivity(intent)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             // If startActivity is blocked for any reason (rare for an
             // AccessibilityService), the UsageStats polling path still fires
             // a notification as a fallback.
+            Log.w("DopaMenu", "Accessibility startActivity blocked: \${e.message}")
         }
     }
 
-    override fun onInterrupt() {}
+    override fun onInterrupt() {
+        // No-op. Keep this try/catch-guarded at the caller; Accessibility
+        // framework invokes this on its own thread and an uncaught throw here
+        // will mark the service as malfunctioning.
+    }
 }
 `;
 }
 
 function getAccessibilityConfigXml() {
+  // android:description is mandatory — Android uses it to populate the
+  // "What this service does" explanation on the Accessibility settings page.
+  // If it's missing or unresolved, the OS marks the service as malfunctioning
+  // and the toggle bounces back to off.
   return `<?xml version="1.0" encoding="utf-8"?>
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/dopamenu_accessibility_description"
     android:accessibilityEventTypes="typeWindowStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:notificationTimeout="100"
-    android:canRetrieveWindowContent="false" />
+    android:canRetrieveWindowContent="false"
+    android:accessibilityFlags="flagDefault" />
+`;
+}
+
+function getDopaMenuStringsXml() {
+  return `<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="dopamenu_accessibility_label">DopaMenu</string>
+    <string name="dopamenu_accessibility_description">DopaMenu watches for when you open apps you\\'ve chosen to intercept (like Instagram or TikTok) and gently redirects you into a mindful moment. This permission is required for the real-time intercept to feel instant. DopaMenu never reads screen content, passwords, or typed text.</string>
+</resources>
 `;
 }
 

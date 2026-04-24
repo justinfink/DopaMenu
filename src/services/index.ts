@@ -5,4 +5,5 @@ export { calendarService } from './calendar';
 export { analyticsService, AnalyticsEvents } from './analytics';
 export { appUsageService } from './appUsage';
 export { screenTimeService } from './screenTime';
+export { installedAppsService } from './installedApps';
 export type { ShortcutSetupInstructions } from './screenTime';

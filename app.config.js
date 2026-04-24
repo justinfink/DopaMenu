@@ -56,7 +56,7 @@ export default {
         foregroundImage: './assets/images/adaptive-icon.png',
         backgroundColor: '#F8F6FA',
       },
-      package: 'com.dopamenu.app',
+      package: 'ai.dopamenu.app',
       permissions: [
         'android.permission.READ_CALENDAR',
         'android.permission.RECEIVE_BOOT_COMPLETED',

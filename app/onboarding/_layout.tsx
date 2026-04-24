@@ -11,6 +11,9 @@ export default function OnboardingLayout() {
       }}
     >
       <Stack.Screen name="index" />
+      <Stack.Screen name="pick-problem-apps" />
+      <Stack.Screen name="pick-redirect-apps" />
+      <Stack.Screen name="permissions" />
       <Stack.Screen name="chat-intake" />
       <Stack.Screen name="complete" />
     </Stack>
