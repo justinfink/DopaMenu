@@ -8,8 +8,17 @@ import { useUserStore } from '../src/stores/userStore';
 import { useInterventionStore } from '../src/stores/interventionStore';
 import { useCustomInterventionsStore } from '../src/stores/customInterventionsStore';
 import { notificationService, analyticsService, AnalyticsEvents, appUsageService } from '../src/services';
+import {
+  hasProblemAppSelection,
+  getAuthorizationStatus as getFamilyControlsStatus,
+  startBlocking as startIosBlocking,
+  recordShieldTrigger,
+  shouldShowIntervention,
+  markInterventionShown,
+  ensureShieldArmedIfWindowExpired,
+} from '../src/services/iosFamilyControls';
 import { simulateSituation, generateIntervention } from '../src/engine/InterventionEngine';
-import { DEFAULT_INTERVENTIONS } from '../src/constants/interventions';
+import { DEFAULT_INTERVENTIONS, getInterventionPool } from '../src/constants/interventions';
 import { colors } from '../src/constants/theme';
 
 // Prevent splash screen from auto-hiding
@@ -72,13 +81,30 @@ export default function RootLayout() {
           await appUsageService.startMonitoring(enabledApps);
         }
       }
+
+      // iOS: re-arm the Shield on every app start so it survives reboots,
+      // package updates, and user toggles. If the user's suppression window
+      // elapsed while we weren't running, this also re-applies the block.
+      if (
+        Platform.OS === 'ios' &&
+        currentUser.preferences.appMonitoringEnabled &&
+        getFamilyControlsStatus() === 'approved' &&
+        hasProblemAppSelection()
+      ) {
+        try {
+          ensureShieldArmedIfWindowExpired();
+          await startIosBlocking();
+        } catch (err) {
+          console.warn('[iOSFamilyControls] boot re-arm failed', err);
+        }
+      }
     }
 
     setupServices();
 
     // Build the merged candidate pool once per effect run: built-in + user custom
     const buildCandidatePool = () => [
-      ...DEFAULT_INTERVENTIONS,
+      ...getInterventionPool(currentUser),
       ...useCustomInterventionsStore.getState().interventions,
     ];
 
@@ -97,35 +123,78 @@ export default function RootLayout() {
           buildCandidatePool(),
           { triggerPackageName: event.packageName }
         );
-        showIntervention(decision, situation);
+        showIntervention(decision, situation, event.packageName);
         router.push('/intervention');
       });
     }
 
-    // Handle deep links from the native AppUsageMonitorService (Android) or
-    // iOS Shortcuts automation. URL shapes:
-    //   Android: dopamenu://intervention?trigger=app_intercept&package=com.instagram.android
-    //   iOS:     dopamenu://intervention?app=com.burbn.instagram
+    // Handle deep links from the native AppUsageMonitorService (Android),
+    // iOS Shortcuts automation, or the iOS ShieldAction extension. Shapes:
+    //   Android:  dopamenu://intervention?trigger=app_intercept&package=com.instagram.android
+    //   iOS Shc:  dopamenu://intervention?app=com.burbn.instagram
+    //   iOS Shld: dopamenu://intervention?source=shield&token=<hash>&name=Instagram
     // Fires when the app is backgrounded or closed and the notification is
-    // tapped, or when Shortcuts fires the "App is Opened" automation.
+    // tapped, Shortcuts fires the "App is Opened" automation, or the user
+    // taps "Take a pause" on the Apple Shield (opens via NSExtensionContext).
     const handleDeepLink = ({ url }: { url: string }) => {
       if (url.startsWith('dopamenu://intervention')) {
-        // Extract ?package=... (Android) or ?app=... (iOS Shortcuts) from
-        // the deep link. iOS passes the iOS bundle id, which we then map
-        // back to the tracked app by iosBundleId to find the corresponding
-        // Android packageName (interventions are keyed by packageName).
         let triggerPackageName: string | undefined;
+        let source: string | undefined;
+        let shieldToken: string | undefined;
+        let shieldName: string | undefined;
         const queryIdx = url.indexOf('?');
         if (queryIdx >= 0) {
           const params = new URLSearchParams(url.substring(queryIdx + 1));
+          source = params.get('source') || undefined;
           triggerPackageName = params.get('package') || undefined;
-          if (!triggerPackageName) {
+
+          if (source === 'shield') {
+            // Shield-originated deep links: the extension can't pass us a
+            // bundle id (tokens are opaque), only the display name. Debounce
+            // to avoid doubling with a concurrent Shortcuts fire for the
+            // same app open.
+            if (!shouldShowIntervention()) {
+              return;
+            }
+            shieldToken = params.get('token') || undefined;
+            shieldName = params.get('name') || undefined;
+            if (shieldToken) {
+              recordShieldTrigger(shieldToken, shieldName);
+            }
+            markInterventionShown();
+            if (shieldName) {
+              const match = currentUser.preferences.trackedApps.find(
+                (a) => a.label.toLowerCase() === shieldName!.toLowerCase()
+              );
+              triggerPackageName = match?.packageName;
+            }
+          } else if (!triggerPackageName) {
             const iosBundleId = params.get('app') || undefined;
             if (iosBundleId) {
               const match = currentUser.preferences.trackedApps.find(
                 (a) => a.iosBundleId === iosBundleId
               );
               triggerPackageName = match?.packageName;
+              // Auto-detect: the fact that this deep link fired at all proves
+              // the Shortcuts automation is wired up correctly for this app.
+              if (match && !match.iosShortcutConfigured) {
+                const { user: latestUser, updatePreferences } =
+                  useUserStore.getState();
+                if (latestUser) {
+                  const updated = latestUser.preferences.trackedApps.map((a) =>
+                    a.iosBundleId === iosBundleId
+                      ? { ...a, iosShortcutConfigured: true }
+                      : a
+                  );
+                  updatePreferences({ trackedApps: updated });
+                }
+              }
+              if (Platform.OS === 'ios') {
+                if (!shouldShowIntervention()) {
+                  return;
+                }
+                markInterventionShown();
+              }
             }
           }
         }
@@ -136,7 +205,7 @@ export default function RootLayout() {
           buildCandidatePool(),
           { triggerPackageName }
         );
-        showIntervention(decision, situation);
+        showIntervention(decision, situation, triggerPackageName);
         router.push('/intervention');
       }
     };

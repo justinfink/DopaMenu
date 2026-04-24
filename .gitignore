@@ -16,6 +16,7 @@ web-build/
 *.p12
 *.key
 *.mobileprovision
+.secrets/
 
 # Metro
 .metro-health-check*
@@ -31,6 +32,14 @@ yarn-error.*
 
 # Windows reserved file
 nul
+null
+
+# iOS extension target scaffolding is regenerated on every prebuild
+# by react-native-device-activity's withCopyTargetFolder plugin.
+targets/
+
+# Claude Code scheduled tasks lock
+.claude/scheduled_tasks.lock
 
 # local env files
 .env

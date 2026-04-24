@@ -4,6 +4,21 @@
 const POSTHOG_API_KEY = process.env.POSTHOG_API_KEY || '';
 const POSTHOG_HOST = process.env.POSTHOG_HOST || 'https://app.posthog.com';
 
+// Keep in sync with IOS_QUERY_SCHEMES in src/constants/appCatalog.ts.
+// Required so Linking.canOpenURL() can probe whether an app is installed on iOS.
+const LS_APPLICATION_QUERIES_SCHEMES = [
+  'alltrails', 'anki', 'audible', 'barcelona', 'bear', 'bumble', 'calm',
+  'chesscom', 'dayone', 'discord', 'duolingo', 'ebay', 'fb', 'garageband',
+  'headspace', 'hinge', 'instagram', 'kindle', 'libby', 'lichess', 'linkedin',
+  'mobilenotes', 'nflx', 'obsidian', 'overcast', 'pinterest', 'pktc', 'podcasts',
+  'readwise', 'reddit', 'snapchat', 'spotify', 'strava', 'things', 'tiktok',
+  'tinder', 'todoist', 'twitch', 'twitter', 'youtube',
+  // DopaMenu's own scheme for Shortcuts deep-link return
+  'dopamenu',
+  // Apple Shortcuts (for one-tap shortcut import)
+  'shortcuts',
+];
+
 export default {
   expo: {
     name: 'DopaMenu',
@@ -26,6 +41,14 @@ export default {
         NSCalendarsUsageDescription:
           'DopaMenu uses your calendar to understand your schedule and suggest better alternatives at the right moments.',
         ITSAppUsesNonExemptEncryption: false,
+        LSApplicationQueriesSchemes: LS_APPLICATION_QUERIES_SCHEMES,
+      },
+      // Family Controls entitlement — required for DeviceActivity monitoring
+      // and the Shield extension. Apple gates this with a manual approval per
+      // bundle ID; verify by building and watching for "Syncing capabilities"
+      // to succeed without an "enable capability" error.
+      entitlements: {
+        'com.apple.developer.family-controls': true,
       },
     },
     android: {
@@ -67,6 +90,15 @@ export default {
       'expo-font',
       // Custom plugin for Android app usage detection
       './plugins/app-usage/withAppUsage',
+      // iOS Family Controls — Shield + ShieldAction + DeviceActivityMonitor extensions.
+      // Must match IOS_APP_GROUP in src/constants/appGroup.ts.
+      [
+        'react-native-device-activity',
+        {
+          appGroup: 'group.ai.dopamenu.app',
+          copyToTargetFolder: true,
+        },
+      ],
     ],
     experiments: {
       typedRoutes: true,

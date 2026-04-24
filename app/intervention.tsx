@@ -10,6 +10,7 @@ import {
   ScrollView,
   Linking,
   Platform,
+  BackHandler,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -18,7 +19,18 @@ import { Button, Card, InterventionCard } from '../src/components';
 import { useInterventionStore } from '../src/stores/interventionStore';
 import { useUserStore } from '../src/stores/userStore';
 import { InterventionCandidate } from '../src/models';
+import { appUsageService } from '../src/services/appUsage';
+import {
+  suppressBlocking as suppressIosBlocking,
+  readShieldTrigger,
+} from '../src/services/iosFamilyControls';
 import { colors, spacing, borderRadius, typography, shadows } from '../src/constants/theme';
+
+// How long to suppress re-intercepts on the trigger package after the user
+// dismisses/continues/accepts. Enough to cover the trigger app coming back
+// to foreground + a few activity transitions, without leaving the user
+// permanently exempt if they open it again later.
+const SUPPRESSION_WINDOW_MS = 30000;
 
 // ============================================
 // Intervention Modal
@@ -54,17 +66,17 @@ function buildAndroidIntentUrl(packageName: string, fallbackUrl?: string): strin
   return `${base}${parts[0]};${fallback}${parts[1]}`;
 }
 
-async function launchIntervention(intervention: InterventionCandidate): Promise<void> {
+async function launchIntervention(intervention: InterventionCandidate): Promise<boolean> {
   const { launchAppPackage, launchIosScheme, launchTarget } = intervention;
 
   // Nothing to launch — off-phone activity
-  if (!launchAppPackage && !launchIosScheme && !launchTarget) return;
+  if (!launchAppPackage && !launchIosScheme && !launchTarget) return false;
 
   if (Platform.OS === 'android' && launchAppPackage) {
     const intentUrl = buildAndroidIntentUrl(launchAppPackage, launchTarget);
     try {
       await Linking.openURL(intentUrl);
-      return;
+      return true;
     } catch {
       // Fall through to web fallback below
     }
@@ -75,7 +87,7 @@ async function launchIntervention(intervention: InterventionCandidate): Promise<
       const supported = await Linking.canOpenURL(launchIosScheme);
       if (supported) {
         await Linking.openURL(launchIosScheme);
-        return;
+        return true;
       }
     } catch {
       // Fall through to web fallback
@@ -85,14 +97,46 @@ async function launchIntervention(intervention: InterventionCandidate): Promise<
   if (launchTarget) {
     try {
       await Linking.openURL(launchTarget);
+      return true;
     } catch {
       // Silently ignore — nothing to route to
     }
   }
+  return false;
+}
+
+// When the intervention has no launch fields (e.g. "take 3 breaths") or the
+// user taps "continue what I was doing", we want to put them back where they
+// were — not leave them stuck on a DopaMenu screen with no back stack. On
+// Android we exit the activity so the OS returns to the previously focused
+// app (or the home screen). On iOS we have no way to programmatically leave
+// an app, so we send the user to the tabs view.
+async function exitDopaMenu(triggerPackage: string | null): Promise<void> {
+  if (Platform.OS === 'android' && triggerPackage) {
+    const intentUrl = buildAndroidIntentUrl(triggerPackage);
+    try {
+      await Linking.openURL(intentUrl);
+      return;
+    } catch {
+      // fall through
+    }
+  }
+  if (Platform.OS === 'android') {
+    // Exits the current activity — Android returns to the previous task.
+    BackHandler.exitApp();
+    return;
+  }
+  // iOS: land somewhere valid so the user doesn't see a blank screen.
+  if (router.canGoBack()) {
+    router.back();
+  } else {
+    router.replace('/(tabs)');
+  }
 }
 
 export default function InterventionScreen() {
-  const { activeIntervention, recordOutcome, clearActiveIntervention } = useInterventionStore();
+  const { activeIntervention, activeTriggerPackage, recordOutcome, clearActiveIntervention } =
+    useInterventionStore();
   const { user } = useUserStore();
 
   const [showAlternatives, setShowAlternatives] = useState(false);
@@ -121,7 +165,22 @@ export default function InterventionScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
   }, []);
 
-  const handleClose = () => {
+  // closeAndExit: animate out, clear store, then either (a) leave the user on
+  // the launched intervention app, or (b) actively exit DopaMenu so Android
+  // surfaces the previous app or home screen. Never leave the user stranded
+  // on a back-stack-empty white screen, which was the custom-tracked-app bug.
+  const closeAndExit = (launched: boolean) => {
+    const triggerPackage = activeTriggerPackage;
+    // Suppress the trigger package before we hand control back to it. The FGS
+    // poller and AccessibilityService both see the foreground flip right after
+    // we exit — without suppression, they'd immediately re-fire this same
+    // intervention and trap the user in a loop. We suppress in every path
+    // (continue, dismiss, accept) because even handleAccept can land the user
+    // back in the trigger app when the chosen intervention has no launch
+    // target of its own.
+    if (Platform.OS === 'android' && triggerPackage) {
+      appUsageService.suppressIntercept(triggerPackage, SUPPRESSION_WINDOW_MS);
+    }
     Animated.parallel([
       Animated.timing(slideAnim, {
         toValue: SCREEN_HEIGHT,
@@ -135,28 +194,42 @@ export default function InterventionScreen() {
       }),
     ]).start(() => {
       clearActiveIntervention();
-      router.back();
+      // If an external app was launched via Linking, the OS already moved the
+      // user away; no exit needed (calling exitApp would race & sometimes
+      // kill the process before the other app foregrounds cleanly).
+      if (launched) return;
+      exitDopaMenu(triggerPackage);
     });
   };
 
-  const handleAccept = (intervention?: InterventionCandidate) => {
+  const handleAccept = async (intervention?: InterventionCandidate) => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     recordOutcome('accepted');
     const chosen = intervention ?? displayIntervention;
-    handleClose();
-    launchIntervention(chosen);
+    const launched = await launchIntervention(chosen);
+    closeAndExit(launched);
   };
 
   const handleDismiss = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     recordOutcome('dismissed');
-    handleClose();
+    closeAndExit(false);
   };
 
   const handleContinue = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     recordOutcome('continued_default');
-    handleClose();
+    // iOS: lift the Shield for the suppression window so the user's next tap
+    // on the trigger app goes through. The DeviceActivityMonitor extension
+    // re-arms the shield autonomously after cumulative usage crosses the
+    // threshold — no host-app wake-up required.
+    if (Platform.OS === 'ios') {
+      const { tokenHash } = readShieldTrigger();
+      suppressIosBlocking(tokenHash).catch((err) =>
+        console.warn('[iOSFamilyControls] suppress failed', err),
+      );
+    }
+    closeAndExit(false);
   };
 
   const handleSelectAlternative = (intervention: InterventionCandidate) => {
