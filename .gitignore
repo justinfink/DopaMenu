@@ -17,6 +17,8 @@ web-build/
 *.key
 *.mobileprovision
 .secrets/
+credentials.json
+android-credentials/
 
 # Metro
 .metro-health-check*
