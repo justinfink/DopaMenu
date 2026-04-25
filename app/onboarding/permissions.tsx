@@ -393,10 +393,32 @@ export default function PermissionsScreen() {
         return;
       }
 
+      // NEVER auto-launch the accessibility step. The prominent-disclosure
+      // card MUST stay on screen long enough for the user to read it and
+      // tap "I understand" themselves — that's the Google Play policy
+      // requirement for non-tool Accessibility uses. If we auto-open
+      // Settings here, the disclosure flashes for ~450ms and review fails.
+      if (next === 'accessibility') {
+        setBanner(
+          `Nice ✓ Read the next screen, then tap "I understand" when you're ready.`,
+        );
+        return;
+      }
+
       setBanner(`Nice ✓ Opening ${stepMeta[next].title}…`);
       setTimeout(() => {
-        void launchStep(next);
+        void launchStep(next).catch((e) => {
+          console.warn('launchStep auto-launch failed:', e);
+          setBanner("Couldn't open Settings. Tap the card to retry.");
+        });
       }, 450);
+    } catch (e) {
+      // Do not let an unhandled rejection from refreshPermissions /
+      // stopOnboardingWatch / launchStep propagate — React Native will
+      // crash the whole app. This listener fires on every return from
+      // system settings, so a single thrown promise here = the "app
+      // crashes every time I change a setting" bug.
+      console.warn('advanceAfterRecheck failed:', e);
     } finally {
       advancingRef.current = false;
     }
@@ -465,7 +487,11 @@ export default function PermissionsScreen() {
       'change',
       (state: AppStateStatus) => {
         if (state !== 'active') return;
-        setTimeout(() => void advanceAfterRecheck(), 350);
+        setTimeout(() => {
+          advanceAfterRecheck().catch((e) => {
+            console.warn('AppState advanceAfterRecheck rejected:', e);
+          });
+        }, 350);
       },
     );
 
@@ -705,9 +731,9 @@ export default function PermissionsScreen() {
               color="#7A6F85"
             />
             <Text style={[styles.iosNoteText, { fontSize: r.ms(12) }]}>
-              iOS can't directly monitor other apps. After onboarding we'll
-              install a one-tap Shortcut that triggers DopaMenu when you open
-              a tracked app.
+              On iOS, DopaMenu intercepts your chosen apps through Apple's
+              Screen Time framework — you set that up in step 1. We'll also
+              offer an optional one-tap Shortcut for a tap-free redirect.
             </Text>
           </View>
         )}
