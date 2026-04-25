@@ -188,26 +188,37 @@ export default function PermissionsScreen() {
 
   // ─── Step list ─────────────────────────────────────────────────────────
   //
-  // Order matters: unlock_restricted (when needed) comes BEFORE the
-  // permissions it gates. That way Usage Access and Accessibility toggles
-  // won't "malfunction" by the time the user tries to enable them.
+  // Order matters: unlock_restricted comes BEFORE the permissions it gates.
+  // That way Usage Access and Accessibility toggles won't "malfunction" by
+  // the time the user tries to enable them.
+  //
+  // We always include the unlock step on Android 13+ instead of guessing
+  // from the AppOps probe, because that probe is unreliable on some
+  // OEM/installer combinations (Play Store internal-testing in particular).
+  // If the user really doesn't need it, the grantedMap below flips it to
+  // "done" automatically and the flow walks past it without the user
+  // visiting App Info — a 50ms blink, not a wasted step. Erring on the
+  // side of "include it" prevents the malfunctioning dead-end entirely.
+
+  const sdkInt = device?.sdkInt ?? 0;
 
   const stepIds: StepId[] = React.useMemo(() => {
     const list: StepId[] = ['notifications'];
     if (Platform.OS === 'android') {
-      if (needsRestrictedUnlock) {
+      if (sdkInt >= 33) {
         list.push('unlock_restricted');
       }
       list.push('usage_access', 'accessibility');
     }
     return list;
-  }, [needsRestrictedUnlock]);
+  }, [sdkInt]);
 
   const grantedMap: Record<StepId, boolean> = {
     notifications: notificationsGranted,
-    // Unlock step is "done" the moment restricted settings are actually
-    // granted at the OS level — no visit flags, no ambiguity, no risk of
-    // the flow thinking we're done when we're not.
+    // Step is "done" only when the AppOps probe explicitly says granted.
+    // If the probe is unreliable or returns ungranted, the user goes
+    // through the unlock step — a single tap on App Info is far cheaper
+    // than the malfunctioning dead-end on the next step.
     unlock_restricted: !needsRestrictedUnlock,
     usage_access: usageGranted,
     accessibility: accessibilityGranted,
@@ -264,7 +275,22 @@ export default function PermissionsScreen() {
 
   // ─── Step launcher ─────────────────────────────────────────────────────
 
-  const launchStep = async (id: StepId) => {
+  const launchStep = async (
+    id: StepId,
+    triggeredBy: 'user' | 'auto' = 'user',
+  ) => {
+    // HARD GUARD: the accessibility step's prominent-disclosure card MUST
+    // remain on screen until the user explicitly taps "I understand" — both
+    // for Google Play policy and basic UX consent. Auto-callers (the post-
+    // permission-grant chain in advanceAfterRecheck, the AppState listener)
+    // pass triggeredBy='auto' and are refused here. The CTA, pill tap, and
+    // start button pass 'user' and proceed normally. Belt-and-braces in
+    // case any future call site forgets the check upstream.
+    if (id === 'accessibility' && triggeredBy === 'auto') {
+      console.warn('Refusing auto-launch of accessibility step');
+      return;
+    }
+
     // Every path in here is wrapped. A throw from any of these async calls
     // used to bubble up as an unhandled promise rejection and crash the app
     // while the user was mid-flow — that was the "setting change = crash"
@@ -389,7 +415,7 @@ export default function PermissionsScreen() {
 
       setBanner(`Nice ✓ Opening ${stepMeta[next].title}…`);
       setTimeout(() => {
-        void launchStep(next).catch((e) => {
+        launchStep(next, 'auto').catch((e) => {
           console.warn('launchStep auto-launch failed:', e);
           setBanner("Couldn't open Settings. Tap the card to retry.");
         });

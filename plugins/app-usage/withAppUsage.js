@@ -1098,19 +1098,14 @@ class DopaMenuAccessibilityService : AccessibilityService() {
     private var lastInterceptTime: Long = 0L
 
     override fun onServiceConnected() {
-        // Every path in here is wrapped — a single uncaught throw at service-
-        // connect time will mark the service as malfunctioning and bounce the
-        // toggle back to off. Config XML already declares the same values; this
-        // is only a belt-and-braces overwrite.
-        try {
-            serviceInfo = AccessibilityServiceInfo().apply {
-                eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
-                feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-                notificationTimeout = 100
-            }
-        } catch (e: Throwable) {
-            Log.e("DopaMenu", "onServiceConnected failed: \${e.message}", e)
-        }
+        // Do NOT set serviceInfo programmatically here. Assigning a fresh
+        // AccessibilityServiceInfo() replaces the XML config wholesale,
+        // dropping android:description, android:label, packageNames, and
+        // canRetrieveWindowContent. The OS then marks the service as
+        // "malfunctioning" because the runtime info is missing required
+        // fields, and the toggle bounces back to off. The XML config
+        // (res/xml/dopamenu_accessibility_config.xml) already declares
+        // every value the framework needs — leave it alone.
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
