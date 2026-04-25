@@ -25,35 +25,30 @@ import { colors } from '../../src/constants/theme';
 
 // ─── Permissions screen ───────────────────────────────────────────────────────
 //
-// Linear, auto-advancing, device-aware. The whole screen is designed so the
-// user never has to choose what to do next, and the copy always matches what
-// they're about to see in Settings on *their specific device*.
+// Linear, device-aware, and designed around what the user will actually see.
 //
-// Flow:
-//   non-restricted install (Play Store / Android < 13):
-//     notifications → usage_access → accessibility
-//   restricted install (sideloaded on Android 13+):
-//     notifications → usage_access_try → unlock_restricted → usage_access_flip → accessibility
+// Two possible flows, chosen up-front from real device state:
 //
-// Why "try" + "flip" are two steps: Android 13 hides the ⋮ "Allow restricted
-// settings" option until you've ALREADY tried to enable a blocked toggle. So
-// the try step explicitly triggers the block; we detect return, auto-advance
-// to unlock with device-specific copy; then come back for the real flip.
+//   • Android < 13, or Android 13+ with restricted settings already unlocked:
+//       notifications → usage_access → accessibility
 //
-// Progress model:
-//   Each step has a "done" predicate that doesn't require the target
-//   permission to be granted — the "try" step is done the moment the user has
-//   been out and returned; unlock is done the moment the user has been out to
-//   App Info and returned. Only the final step in each pair requires the
-//   actual permission. This is what keeps us from getting stuck when Android
-//   blocks the toggle.
+//   • Android 13+ with restricted settings LOCKED (which is the case for
+//     sideloaded installs AND for Play Store internal-testing apps that
+//     Google hasn't reviewed yet — both flow through the same gate):
+//       notifications → unlock_restricted → usage_access → accessibility
+//
+// We decide which list to use by calling checkRestrictedSettingsGranted()
+// on mount. If restricted settings are locked, Usage Access and
+// Accessibility toggles will both fail with "This service is
+// malfunctioning" or a silent bounce, so we surface the unlock step FIRST
+// — before the user hits either wall. No reactive "if the toggle
+// malfunctions, tap here" helper; the flow just includes the unlock when
+// it's needed.
 
 type StepId =
   | 'notifications'
   | 'usage_access'
-  | 'usage_access_try'
   | 'unlock_restricted'
-  | 'usage_access_flip'
   | 'accessibility';
 
 interface StepMeta {
@@ -70,12 +65,18 @@ function getUnlockMeta(device: DeviceProfile | null): StepMeta {
   const isSamsungOneUI6Plus =
     !!device?.isSamsung && device.oneUIVersion >= 6;
 
+  // Shared preamble so the user understands WHY this step exists before
+  // they follow the device-specific instructions. Without this, "Allow
+  // restricted settings" sounds scary and arbitrary.
+  const why =
+    "Android blocks DopaMenu's next two permissions (Usage Access and Accessibility) until you flip this one switch in App Info. Do this once and the rest of setup is smooth.";
+
   if (isSamsungOneUI6Plus) {
     return {
       icon: 'lock-open',
-      title: 'Allow restricted settings',
-      activeBlurb:
-        "Your Samsung surfaces this as a row on the App Info page (no menu).",
+      title: 'Unlock permissions',
+      pillTitle: 'Unlock permissions',
+      activeBlurb: `${why}\n\nOn your Samsung this is a row directly on the App Info page (no menu needed).`,
       steps: [
         'Scroll down the App Info page',
         'Tap "Allow restricted settings"',
@@ -88,9 +89,9 @@ function getUnlockMeta(device: DeviceProfile | null): StepMeta {
 
   return {
     icon: 'lock-open',
-    title: 'Allow restricted settings',
-    activeBlurb:
-      "Tap the ⋮ menu at the top of App Info. If ⋮ isn't there yet, you need to trigger the block first — go back and try Usage Access again.",
+    title: 'Unlock permissions',
+    pillTitle: 'Unlock permissions',
+    activeBlurb: `${why}\n\nOn the App Info page, tap ⋮ in the top-right, then "Allow restricted settings." If you don't see ⋮, your Android version needs you to tap the DopaMenu app name once first.`,
     steps: [
       'Tap ⋮ in the top-right of App Info',
       'Tap "Allow restricted settings"',
@@ -110,6 +111,7 @@ function buildStepMeta(device: DeviceProfile | null): Record<StepId, StepMeta> {
       cta: 'Allow notifications',
       watchTarget: null,
     },
+    unlock_restricted: getUnlockMeta(device),
     usage_access: {
       icon: 'stats-chart',
       title: 'Usage Access',
@@ -118,34 +120,6 @@ function buildStepMeta(device: DeviceProfile | null): Record<StepId, StepMeta> {
       steps: [
         'Find "DopaMenu" in the list',
         'Tap it, then flip the toggle on',
-      ],
-      cta: 'Open Usage Access',
-      watchTarget: 'usage_access',
-    },
-    usage_access_try: {
-      icon: 'stats-chart',
-      title: 'Try Usage Access',
-      activeBlurb:
-        "Android will block this first attempt — that's expected. Just trigger the block, dismiss the dialog, come back. We'll take it from there.",
-      steps: [
-        'Tap "DopaMenu" in the list',
-        'Try the toggle — a "Restricted setting" dialog will appear',
-        'Tap OK or Close to dismiss',
-        'Come back to DopaMenu',
-      ],
-      cta: 'Open Usage Access',
-      watchTarget: null,
-    },
-    unlock_restricted: getUnlockMeta(device),
-    usage_access_flip: {
-      icon: 'checkmark-done',
-      title: 'Flip Usage Access on',
-      activeBlurb:
-        'Now the toggle works. Find DopaMenu and turn Usage Access on.',
-      steps: [
-        'Tap "DopaMenu" in the list',
-        'Flip the toggle on (it should work this time)',
-        'Come back to DopaMenu',
       ],
       cta: 'Open Usage Access',
       watchTarget: 'usage_access',
@@ -184,33 +158,22 @@ export default function PermissionsScreen() {
 
   // Platform / device probes
   const [device, setDevice] = useState<DeviceProfile | null>(null);
-  const [isRestricted, setIsRestricted] = useState(false);
   const [platformLoaded, setPlatformLoaded] = useState(false);
+
+  // Restricted-settings gate. On Android 13+, unreviewed apps (sideload OR
+  // Play Store internal testing) must have this unlocked before the OS will
+  // let the user enable Usage Access or Accessibility. Detected up-front so
+  // the unlock step can appear at the right spot in a single linear flow
+  // — no reactive "try and recover" helpers.
+  const [needsRestrictedUnlock, setNeedsRestrictedUnlock] = useState(false);
 
   // Permission state
   const [notificationsGranted, setNotificationsGranted] = useState(false);
   const [usageGranted, setUsageGranted] = useState(false);
   const [accessibilityGranted, setAccessibilityGranted] = useState(false);
 
-  // Visit-based progress. Refs are seeded from persisted state on mount so
-  // progress survives process death (Android can kill the app while the user
-  // is in Settings). Every flip goes through markUsageTried / markUnlockVisited
-  // which also writes back to the persisted store.
-  const usageTriedRef = useRef(!!persistedProgress?.usageAccessTried);
-  const unlockVisitedRef = useRef(!!persistedProgress?.restrictedUnlockVisited);
   const [progressTick, setProgressTick] = useState(0); // trigger re-render
   const bumpProgress = () => setProgressTick((t) => t + 1);
-
-  const markUsageTried = () => {
-    if (usageTriedRef.current) return;
-    usageTriedRef.current = true;
-    updateOnboardingProgress({ usageAccessTried: true });
-  };
-  const markUnlockVisited = () => {
-    if (unlockVisitedRef.current) return;
-    unlockVisitedRef.current = true;
-    updateOnboardingProgress({ restrictedUnlockVisited: true });
-  };
 
   const [started, setStarted] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
@@ -224,31 +187,29 @@ export default function PermissionsScreen() {
   const stepMeta = buildStepMeta(device);
 
   // ─── Step list ─────────────────────────────────────────────────────────
+  //
+  // Order matters: unlock_restricted (when needed) comes BEFORE the
+  // permissions it gates. That way Usage Access and Accessibility toggles
+  // won't "malfunction" by the time the user tries to enable them.
 
   const stepIds: StepId[] = React.useMemo(() => {
     const list: StepId[] = ['notifications'];
     if (Platform.OS === 'android') {
-      if (isRestricted) {
-        list.push('usage_access_try', 'unlock_restricted', 'usage_access_flip');
-      } else {
-        list.push('usage_access');
+      if (needsRestrictedUnlock) {
+        list.push('unlock_restricted');
       }
-      list.push('accessibility');
+      list.push('usage_access', 'accessibility');
     }
     return list;
-  }, [isRestricted]);
+  }, [needsRestrictedUnlock]);
 
   const grantedMap: Record<StepId, boolean> = {
     notifications: notificationsGranted,
+    // Unlock step is "done" the moment restricted settings are actually
+    // granted at the OS level — no visit flags, no ambiguity, no risk of
+    // the flow thinking we're done when we're not.
+    unlock_restricted: !needsRestrictedUnlock,
     usage_access: usageGranted,
-    // "Try" is done as soon as the user has returned from Usage Access once,
-    // regardless of whether the toggle was actually granted. That's what lets
-    // us move the user on to the unlock step after Android blocks them.
-    usage_access_try: usageGranted || usageTriedRef.current,
-    // Unlock is done once the user has returned from the unlock step, OR
-    // (functional probe) once Usage Access ends up granted later.
-    unlock_restricted: usageGranted || unlockVisitedRef.current,
-    usage_access_flip: usageGranted,
     accessibility: accessibilityGranted,
   };
   // Keep progressTick referenced so TS doesn't elide it and React re-renders
@@ -286,6 +247,18 @@ export default function PermissionsScreen() {
     }
     setUsageGranted(u);
     setAccessibilityGranted(a);
+
+    // Re-evaluate the restricted-settings gate every refresh. If the user
+    // just unlocked it, the unlock step flips to "done" automatically and
+    // the flow advances on its own — no extra tap, no stale flag.
+    try {
+      const restrictedGranted =
+        await appUsageService.checkRestrictedSettingsGranted();
+      setNeedsRestrictedUnlock(!restrictedGranted);
+    } catch {
+      // Probe unavailable (very old Android, pre-Tiramisu). Don't block.
+    }
+
     return { n, u, a };
   };
 
@@ -335,12 +308,6 @@ export default function PermissionsScreen() {
 
       switch (id) {
         case 'usage_access':
-        case 'usage_access_flip':
-          await appUsageService.requestPermission();
-          break;
-        case 'usage_access_try':
-          markUsageTried();
-          bumpProgress();
           await appUsageService.requestPermission();
           break;
         case 'unlock_restricted':
@@ -358,37 +325,30 @@ export default function PermissionsScreen() {
 
   // ─── Advance after re-foreground ───────────────────────────────────────
   //
-  // Called on every AppState=active. Does TWO things:
-  //   1. Updates progress from whatever the user did while we were in the
-  //      background (marks "visit" flags if we were watching a step).
-  //   2. If the first un-granted step has CHANGED since we last launched,
-  //      auto-launches it. If it's the same step, we don't auto-relaunch —
-  //      otherwise the user would keep getting teleported back to Settings
-  //      every time they came back without making progress.
+  // Called on every AppState=active. Refreshes permission state from the OS
+  // and, if the next un-granted step has CHANGED since we last launched,
+  // auto-launches it. Same-step returns are silent — we don't teleport the
+  // user back to Settings on every "I'm still trying" bounce.
 
   const advanceAfterRecheck = async () => {
     if (advancingRef.current) return;
     advancingRef.current = true;
     try {
-      // If we were watching a "visit-based" target, record the visit.
-      const watched = activeWatchRef.current;
-      if (watched === 'restricted_unlock') {
-        markUnlockVisited();
-      }
-      // Treat any return from Usage Access as having "tried" it, even if the
-      // user never tapped a toggle — they saw the screen, that's enough for
-      // the flow to advance.
-      if (lastLaunchedRef.current === 'usage_access_try') {
-        markUsageTried();
-      }
-
       const { n, u, a } = await refreshPermissions();
+      // needsRestrictedUnlock state is already updated inside
+      // refreshPermissions (from the native AppOps probe). Read it back
+      // via a direct OS check so we don't race React's state batching.
+      let restrictedGranted = true;
+      try {
+        restrictedGranted =
+          await appUsageService.checkRestrictedSettingsGranted();
+      } catch {
+        // probe unavailable — assume granted so we don't gate the flow
+      }
       const latest: Record<StepId, boolean> = {
         notifications: n,
+        unlock_restricted: restrictedGranted,
         usage_access: u,
-        usage_access_try: u || usageTriedRef.current,
-        unlock_restricted: u || unlockVisitedRef.current,
-        usage_access_flip: u,
         accessibility: a,
       };
       const next = stepIds.find((id) => !latest[id]) ?? null;
@@ -449,26 +409,25 @@ export default function PermissionsScreen() {
   // Manual re-check: same as advanceAfterRecheck but never auto-launches a
   // Settings screen. Just refreshes state and tells the user what it found.
   const recheckOnly = async () => {
-    // If activeWatchRef.current is restricted_unlock, treat the re-check as
-    // "I've returned from unlocking" so unlock_restricted flips to done.
-    if (activeWatchRef.current === 'restricted_unlock') {
-      markUnlockVisited();
-      await appUsageService.stopOnboardingWatch();
+    if (activeWatchRef.current) {
+      await appUsageService.stopOnboardingWatch().catch(() => {});
       activeWatchRef.current = null;
-    }
-    if (lastLaunchedRef.current === 'usage_access_try') {
-      markUsageTried();
     }
 
     const { n, u, a } = await refreshPermissions();
+    let restrictedGranted = true;
+    try {
+      restrictedGranted =
+        await appUsageService.checkRestrictedSettingsGranted();
+    } catch {
+      /* probe unavailable */
+    }
     bumpProgress();
 
     const latest: Record<StepId, boolean> = {
       notifications: n,
+      unlock_restricted: restrictedGranted,
       usage_access: u,
-      usage_access_try: u || usageTriedRef.current,
-      unlock_restricted: u || unlockVisitedRef.current,
-      usage_access_flip: u,
       accessibility: a,
     };
     const next = stepIds.find((id) => !latest[id]) ?? null;
@@ -495,13 +454,13 @@ export default function PermissionsScreen() {
     (async () => {
       try {
         if (Platform.OS === 'android') {
-          const [restricted, profile] = await Promise.all([
-            appUsageService.checkIsRestrictedInstall().catch(() => false),
-            appUsageService.getDeviceProfile().catch(() => null),
-          ]);
-          setIsRestricted(restricted);
+          const profile = await appUsageService
+            .getDeviceProfile()
+            .catch(() => null);
           setDevice(profile);
         }
+        // refreshPermissions also sets needsRestrictedUnlock from the
+        // AppOps probe, so the step list is correct on first render.
         await refreshPermissions();
       } catch (e) {
         console.warn('permissions init failed:', e);
@@ -692,39 +651,14 @@ export default function PermissionsScreen() {
               </Text>
             </Pressable>
             {currentStep.id === 'accessibility' && (
-              <>
-                {/* Restricted-settings unlock helper. Play Store internal
-                    testing installs on Android 13+ are sometimes treated as
-                    restricted-install apps, which makes the Accessibility
-                    toggle show "This service is malfunctioning" on first
-                    try. The fix is to open App Info → ⋮ → Allow restricted
-                    settings first, then come back and toggle. We surface
-                    that shortcut here so the user doesn't have to guess. */}
-                <Pressable
-                  onPress={() => {
-                    appUsageService
-                      .openAppInfo()
-                      .catch((e) => console.warn('openAppInfo failed:', e));
-                    setBanner(
-                      'Tap ⋮ (top-right) → "Allow restricted settings," ' +
-                        'then come back and tap "I understand" again.',
-                    );
-                  }}
-                  style={[styles.checkLink, { paddingVertical: r.scale(8) }]}
-                >
-                  <Text style={[styles.checkLinkText, { fontSize: r.ms(12) }]}>
-                    Toggle says "malfunctioning"? Tap to unlock restricted settings
-                  </Text>
-                </Pressable>
-                <Pressable
-                  onPress={handleDeclineAccessibility}
-                  style={[styles.checkLink, { paddingVertical: r.scale(8) }]}
-                >
-                  <Text style={[styles.declineLinkText, { fontSize: r.ms(12) }]}>
-                    Decline — DopaMenu won't be able to intercept apps
-                  </Text>
-                </Pressable>
-              </>
+              <Pressable
+                onPress={handleDeclineAccessibility}
+                style={[styles.checkLink, { paddingVertical: r.scale(8) }]}
+              >
+                <Text style={[styles.declineLinkText, { fontSize: r.ms(12) }]}>
+                  Decline — DopaMenu won't be able to intercept apps
+                </Text>
+              </Pressable>
             )}
           </View>
         )}
