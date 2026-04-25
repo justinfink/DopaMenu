@@ -58,7 +58,8 @@ type StepId =
 
 interface StepMeta {
   icon: keyof typeof Ionicons.glyphMap;
-  title: string;
+  title: string; // shown as the card heading and, when no pillTitle is set, the pill text
+  pillTitle?: string; // shorter label for the progress pill, so long prose titles don't pollute the pill list
   activeBlurb: string;
   steps?: string[];
   cta: string;
@@ -157,8 +158,9 @@ function buildStepMeta(device: DeviceProfile | null): Record<StepId, StepMeta> {
       // see, why we need it, where it goes) is spelled out here. Don't soften
       // this copy without re-confirming the policy.
       title: 'Why DopaMenu needs Accessibility',
+      pillTitle: 'Accessibility',
       activeBlurb:
-        "DopaMenu uses Android's Accessibility Service to notice when you open an app you've chosen to intercept (like Instagram or TikTok) so it can bring the intervention screen up instantly.\n\nWhat we see: only which app is in the foreground — its package name (e.g. \"com.instagram.android\"). DopaMenu does NOT read screen content, capture text, monitor passwords, or access any other personal data through this API.\n\nWhere it goes: everything stays on your device. Nothing is sent to our servers or any third party.\n\nTap below to consent and open Settings, or decline to skip.",
+        "DopaMenu uses Android's Accessibility Service to notice when you open an app you've chosen to intercept (like Instagram or TikTok) so it can bring the intervention screen up instantly.\n\nWhat we see: only which app is in the foreground — its package name (e.g. \"com.instagram.android\"). DopaMenu does NOT read screen content, capture text, monitor passwords, or access any other personal data through this API.\n\nWhere it goes: everything stays on your device. Nothing is sent to our servers or any third party.\n\nTap below to consent and open Settings, or decline to skip. If the toggle later says \"This service is malfunctioning,\" it just means Android is blocking it until you unlock restricted settings — we'll walk you through that.",
       steps: [
         'Tap "Installed apps" (or "Downloaded apps")',
         'Tap "DopaMenu"',
@@ -290,28 +292,47 @@ export default function PermissionsScreen() {
   // ─── Step launcher ─────────────────────────────────────────────────────
 
   const launchStep = async (id: StepId) => {
-    setBanner(null);
-    lastLaunchedRef.current = id;
-
-    if (id === 'notifications') {
-      const res = await Notifications.requestPermissionsAsync();
-      setNotificationsGranted(res.status === 'granted');
-      // Advance on the next tick so state has committed.
-      setTimeout(() => void advanceAfterRecheck(), 50);
-      return;
-    }
-
-    const meta = stepMeta[id];
-    if (meta.watchTarget) {
-      await appUsageService.startOnboardingWatch(meta.watchTarget);
-      activeWatchRef.current = meta.watchTarget;
-    } else {
-      // Defensive: clear any stale watcher if this step doesn't need one.
-      await appUsageService.stopOnboardingWatch();
-      activeWatchRef.current = null;
-    }
-
+    // Every path in here is wrapped. A throw from any of these async calls
+    // used to bubble up as an unhandled promise rejection and crash the app
+    // while the user was mid-flow — that was the "setting change = crash"
+    // bug testers reported.
     try {
+      setBanner(null);
+      lastLaunchedRef.current = id;
+
+      if (id === 'notifications') {
+        try {
+          const res = await Notifications.requestPermissionsAsync();
+          setNotificationsGranted(res.status === 'granted');
+        } catch (e) {
+          console.warn('requestPermissionsAsync failed:', e);
+          setBanner("Couldn't open notifications prompt. Tap to retry.");
+          return;
+        }
+        // Advance on the next tick so state has committed.
+        setTimeout(() => {
+          advanceAfterRecheck().catch((e) =>
+            console.warn('advanceAfterRecheck (post-notif) failed:', e),
+          );
+        }, 50);
+        return;
+      }
+
+      const meta = stepMeta[id];
+      try {
+        if (meta.watchTarget) {
+          await appUsageService.startOnboardingWatch(meta.watchTarget);
+          activeWatchRef.current = meta.watchTarget;
+        } else {
+          // Defensive: clear any stale watcher if this step doesn't need one.
+          await appUsageService.stopOnboardingWatch();
+          activeWatchRef.current = null;
+        }
+      } catch (e) {
+        console.warn('onboarding watcher setup failed:', e);
+        // Not fatal — the permission request below can still succeed.
+      }
+
       switch (id) {
         case 'usage_access':
         case 'usage_access_flip':
@@ -329,7 +350,8 @@ export default function PermissionsScreen() {
           await appUsageService.requestAccessibilityPermission();
           break;
       }
-    } catch {
+    } catch (e) {
+      console.warn('launchStep failed:', e);
       setBanner("Couldn't open Settings. Tap the button to retry.");
     }
   };
@@ -470,18 +492,25 @@ export default function PermissionsScreen() {
     // back here instead of the welcome screen.
     updateOnboardingProgress({ currentStep: 'permissions' });
 
-    void (async () => {
-      if (Platform.OS === 'android') {
-        const [restricted, profile] = await Promise.all([
-          appUsageService.checkIsRestrictedInstall().catch(() => false),
-          appUsageService.getDeviceProfile().catch(() => null),
-        ]);
-        setIsRestricted(restricted);
-        setDevice(profile);
+    (async () => {
+      try {
+        if (Platform.OS === 'android') {
+          const [restricted, profile] = await Promise.all([
+            appUsageService.checkIsRestrictedInstall().catch(() => false),
+            appUsageService.getDeviceProfile().catch(() => null),
+          ]);
+          setIsRestricted(restricted);
+          setDevice(profile);
+        }
+        await refreshPermissions();
+      } catch (e) {
+        console.warn('permissions init failed:', e);
+      } finally {
+        // Always mark the screen as loaded so the user isn't stuck on a
+        // blank SafeAreaView if the native probes fail.
+        setPlatformLoaded(true);
       }
-      await refreshPermissions();
-      setPlatformLoaded(true);
-    })();
+    })().catch((e) => console.warn('permissions IIFE rejected:', e));
 
     const sub = AppState.addEventListener(
       'change',
@@ -507,18 +536,40 @@ export default function PermissionsScreen() {
 
   const handleStart = async () => {
     setStarted(true);
-    if (currentStep) {
-      await launchStep(currentStep.id);
+    if (!currentStep) return;
+    // If the only remaining step is accessibility, don't auto-launch Settings
+    // — the user has to see the disclosure card first and tap the CTA
+    // themselves. Google Play policy + user confusion reports.
+    if (currentStep.id === 'accessibility') {
+      setBanner(null);
+      return;
     }
+    await launchStep(currentStep.id).catch((e) =>
+      console.warn('handleStart launch failed:', e),
+    );
   };
 
   const handleCta = async () => {
-    if (currentStep) await launchStep(currentStep.id);
+    if (!currentStep) return;
+    await launchStep(currentStep.id).catch((e) =>
+      console.warn('handleCta launch failed:', e),
+    );
   };
 
   const handlePillPress = async (id: StepId) => {
     if (!started) setStarted(true);
-    await launchStep(id);
+    // Pill taps for the accessibility step must NOT open Settings. The user
+    // has to see the disclosure card (which is already on screen) and tap
+    // the "I understand" CTA to consent. Tapping the pill elsewhere would
+    // bypass the disclosure — that was the "pill took me to Accessibility
+    // even though I was reading the card" complaint.
+    if (id === 'accessibility') {
+      setBanner(null);
+      return;
+    }
+    await launchStep(id).catch((e) =>
+      console.warn('handlePillPress launch failed:', e),
+    );
   };
 
   const handleManualCheck = async () => {
@@ -641,14 +692,39 @@ export default function PermissionsScreen() {
               </Text>
             </Pressable>
             {currentStep.id === 'accessibility' && (
-              <Pressable
-                onPress={handleDeclineAccessibility}
-                style={[styles.checkLink, { paddingVertical: r.scale(8) }]}
-              >
-                <Text style={[styles.declineLinkText, { fontSize: r.ms(12) }]}>
-                  Decline — DopaMenu won't be able to intercept apps
-                </Text>
-              </Pressable>
+              <>
+                {/* Restricted-settings unlock helper. Play Store internal
+                    testing installs on Android 13+ are sometimes treated as
+                    restricted-install apps, which makes the Accessibility
+                    toggle show "This service is malfunctioning" on first
+                    try. The fix is to open App Info → ⋮ → Allow restricted
+                    settings first, then come back and toggle. We surface
+                    that shortcut here so the user doesn't have to guess. */}
+                <Pressable
+                  onPress={() => {
+                    appUsageService
+                      .openAppInfo()
+                      .catch((e) => console.warn('openAppInfo failed:', e));
+                    setBanner(
+                      'Tap ⋮ (top-right) → "Allow restricted settings," ' +
+                        'then come back and tap "I understand" again.',
+                    );
+                  }}
+                  style={[styles.checkLink, { paddingVertical: r.scale(8) }]}
+                >
+                  <Text style={[styles.checkLinkText, { fontSize: r.ms(12) }]}>
+                    Toggle says "malfunctioning"? Tap to unlock restricted settings
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={handleDeclineAccessibility}
+                  style={[styles.checkLink, { paddingVertical: r.scale(8) }]}
+                >
+                  <Text style={[styles.declineLinkText, { fontSize: r.ms(12) }]}>
+                    Decline — DopaMenu won't be able to intercept apps
+                  </Text>
+                </Pressable>
+              </>
             )}
           </View>
         )}
@@ -694,7 +770,7 @@ export default function PermissionsScreen() {
                     isCurrent && styles.pillTextCurrent,
                   ]}
                 >
-                  {stepMeta[s.id].title}
+                  {stepMeta[s.id].pillTitle ?? stepMeta[s.id].title}
                 </Text>
                 {s.granted ? (
                   <Text style={[styles.pillBadge, { fontSize: r.ms(11) }]}>
@@ -706,13 +782,7 @@ export default function PermissionsScreen() {
                   >
                     NEXT
                   </Text>
-                ) : (
-                  <Ionicons
-                    name="chevron-forward"
-                    size={r.scale(16)}
-                    color="#B6ADC2"
-                  />
-                )}
+                ) : null}
               </Pressable>
             );
           })}
