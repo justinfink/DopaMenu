@@ -151,15 +151,20 @@ function buildStepMeta(device: DeviceProfile | null): Record<StepId, StepMeta> {
     },
     accessibility: {
       icon: 'eye',
-      title: 'Accessibility',
+      // Prominent disclosure required by Google Play for non-tool uses of the
+      // Accessibility API. Reviewers check that the user sees this language
+      // BEFORE the system permission flow; that's why every detail (what we
+      // see, why we need it, where it goes) is spelled out here. Don't soften
+      // this copy without re-confirming the policy.
+      title: 'Why DopaMenu needs Accessibility',
       activeBlurb:
-        'Instant detection of Instagram and other apps. Enable DopaMenu under "Installed apps".',
+        "DopaMenu uses Android's Accessibility Service to notice when you open an app you've chosen to intercept (like Instagram or TikTok) so it can bring the intervention screen up instantly.\n\nWhat we see: only which app is in the foreground — its package name (e.g. \"com.instagram.android\"). DopaMenu does NOT read screen content, capture text, monitor passwords, or access any other personal data through this API.\n\nWhere it goes: everything stays on your device. Nothing is sent to our servers or any third party.\n\nTap below to consent and open Settings, or decline to skip.",
       steps: [
         'Tap "Installed apps" (or "Downloaded apps")',
         'Tap "DopaMenu"',
         'Flip the toggle on, confirm',
       ],
-      cta: 'Open Accessibility',
+      cta: 'I understand — Open Accessibility',
       watchTarget: 'accessibility',
     },
   };
@@ -495,6 +500,22 @@ export default function PermissionsScreen() {
     await recheckOnly();
   };
 
+  // Explicit "decline" path for Accessibility. Google's prominent disclosure
+  // policy expects the in-app screen to offer a clear opt-out before sending
+  // the user to system settings. We don't actually advance past this step
+  // without the permission — DopaMenu's intercept can't function — but the
+  // user can come back and tap consent any time, or enable from Settings.
+  const handleDeclineAccessibility = async () => {
+    await appUsageService.stopOnboardingWatch();
+    activeWatchRef.current = null;
+    lastLaunchedRef.current = null;
+    setBanner(
+      "Got it — DopaMenu won't intercept apps until you turn this on. " +
+      "You can enable it any time from Settings → Apps → DopaMenu → Accessibility, " +
+      "or come back here and tap \"I understand\" above.",
+    );
+  };
+
   const handleDone = async () => {
     await appUsageService.stopOnboardingWatch();
     activeWatchRef.current = null;
@@ -593,6 +614,16 @@ export default function PermissionsScreen() {
                 Already did this? Tap to re-check
               </Text>
             </Pressable>
+            {currentStep.id === 'accessibility' && (
+              <Pressable
+                onPress={handleDeclineAccessibility}
+                style={[styles.checkLink, { paddingVertical: r.scale(8) }]}
+              >
+                <Text style={[styles.declineLinkText, { fontSize: r.ms(12) }]}>
+                  Decline — DopaMenu won't be able to intercept apps
+                </Text>
+              </Pressable>
+            )}
           </View>
         )}
 
@@ -752,6 +783,7 @@ const styles = StyleSheet.create({
   bannerText: { color: '#5C4A72', fontWeight: '500' },
   checkLink: { alignItems: 'center', marginTop: 4 },
   checkLinkText: { color: '#9B7BB8', fontWeight: '600' },
+  declineLinkText: { color: '#7A6F85', fontWeight: '500', textDecorationLine: 'underline' },
   pill: {
     flexDirection: 'row',
     alignItems: 'center',
