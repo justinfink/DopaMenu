@@ -25,30 +25,41 @@ import { colors } from '../../src/constants/theme';
 
 // ─── Permissions screen ───────────────────────────────────────────────────────
 //
-// Linear, device-aware, and designed around what the user will actually see.
+// Linear, device-aware, and built around an empirical fact about Android 14/15
+// on stock Pixel: the App Info ⋮ menu's "Allow restricted settings" entry is
+// HIDDEN until the user has *attempted* a restricted toggle (Accessibility or
+// Usage Access). We previously opened App Info first and asked the user to
+// flip the unlock — they couldn't, because the entry wasn't there yet.
 //
-// Two possible flows, chosen up-front from real device state:
+// The flow now does it in the order the OS expects:
 //
-//   • Android < 13, or Android 13+ with restricted settings already unlocked:
-//       notifications → usage_access → accessibility
+//   • Android < 13: notifications → usage_access → accessibility
 //
-//   • Android 13+ with restricted settings LOCKED (which is the case for
-//     sideloaded installs AND for Play Store internal-testing apps that
-//     Google hasn't reviewed yet — both flow through the same gate):
-//       notifications → unlock_restricted → usage_access → accessibility
+//   • Android 13+ with the install ungated (Accessibility OR Usage Access
+//     already grantable on first probe): same as < 13.
 //
-// We decide which list to use by calling checkRestrictedSettingsGranted()
-// on mount. If restricted settings are locked, Usage Access and
-// Accessibility toggles will both fail with "This service is
-// malfunctioning" or a silent bounce, so we surface the unlock step FIRST
-// — before the user hits either wall. No reactive "if the toggle
-// malfunctions, tap here" helper; the flow just includes the unlock when
-// it's needed.
+//   • Android 13+ with the install gated (the common case for sideload AND
+//     for Play Store internal-testing builds that haven't been reviewed):
+//       notifications
+//         → trigger_restricted   (open Accessibility, expected failure —
+//                                 this is what summons the ⋮ entry)
+//         → unlock_restricted    (open App Info, ⋮ is now there, grant)
+//         → accessibility        (real attempt, now actually works)
+//         → usage_access         (covered by the same unlock)
+//
+// Completion of trigger_restricted and unlock_restricted is detected by
+// "user returned from settings after we sent them there", NOT by the
+// AppOps probe OPSTR_ACCESS_RESTRICTED_SETTINGS — that probe is unreliable
+// from a non-privileged app and was the reason the unlock step never
+// auto-completed. If the user didn't actually do the action, the next
+// step's toggle will fail and they can use the "Re-check" link or tap a
+// pill to redo any step.
 
 type StepId =
   | 'notifications'
-  | 'usage_access'
+  | 'trigger_restricted'
   | 'unlock_restricted'
+  | 'usage_access'
   | 'accessibility';
 
 interface StepMeta {
@@ -61,21 +72,40 @@ interface StepMeta {
   watchTarget: OnboardingWatchTarget | null;
 }
 
+function getTriggerMeta(): StepMeta {
+  // The "wake up Android" step. Sending the user to Accessibility Settings
+  // and asking them to TRY the toggle is what summons the "Allow restricted
+  // settings" entry into the App Info ⋮ menu in the next step. We frame this
+  // honestly — telling the user "this is supposed to fail" prevents the
+  // confused bounce-back loop ("the toggle didn't work, what do I do?").
+  return {
+    icon: 'flash',
+    title: 'Wake up Android',
+    pillTitle: 'Wake up Android',
+    activeBlurb:
+      "Android hides the unlock switch until we *try* a restricted permission first. Tap below to open Accessibility Settings and try to flip DopaMenu's toggle. You'll see a \"Restricted setting\" message or the toggle won't budge — that's exactly what we want. Tap OK on the dialog, then come back. The unlock option will be there in the next step.",
+    steps: [
+      'Tap "Installed apps" (or "Downloaded apps")',
+      'Tap "DopaMenu", then tap the toggle',
+      'When you see "Restricted setting", tap OK and come back',
+    ],
+    cta: 'Open Accessibility (expect a block)',
+    watchTarget: null,
+  };
+}
+
 function getUnlockMeta(device: DeviceProfile | null): StepMeta {
   const isSamsungOneUI6Plus =
     !!device?.isSamsung && device.oneUIVersion >= 6;
 
-  // Shared preamble so the user understands WHY this step exists before
-  // they follow the device-specific instructions. Without this, "Allow
-  // restricted settings" sounds scary and arbitrary.
   const why =
-    "Android blocks DopaMenu's next two permissions (Usage Access and Accessibility) until you flip this one switch in App Info. Do this once and the rest of setup is smooth.";
+    'Now Android knows DopaMenu wants a restricted permission, the unlock option is available. Flip it once and Accessibility + Usage Access will both work.';
 
   if (isSamsungOneUI6Plus) {
     return {
       icon: 'lock-open',
-      title: 'Unlock permissions',
-      pillTitle: 'Unlock permissions',
+      title: 'Allow restricted settings',
+      pillTitle: 'Allow restricted settings',
       activeBlurb: `${why}\n\nOn your Samsung this is a row directly on the App Info page (no menu needed).`,
       steps: [
         'Scroll down the App Info page',
@@ -89,13 +119,13 @@ function getUnlockMeta(device: DeviceProfile | null): StepMeta {
 
   return {
     icon: 'lock-open',
-    title: 'Unlock permissions',
-    pillTitle: 'Unlock permissions',
-    activeBlurb: `${why}\n\nOn the App Info page, tap ⋮ in the top-right, then "Allow restricted settings." If you don't see ⋮, your Android version needs you to tap the DopaMenu app name once first.`,
+    title: 'Allow restricted settings',
+    pillTitle: 'Allow restricted settings',
+    activeBlurb: `${why}\n\nIn the top-right of App Info you'll see ⋮ — tap it, then tap "Allow restricted settings" and confirm with your fingerprint or PIN.`,
     steps: [
       'Tap ⋮ in the top-right of App Info',
       'Tap "Allow restricted settings"',
-      'Confirm, then come back here',
+      'Confirm with fingerprint / PIN, then come back',
     ],
     cta: 'Open App Info',
     watchTarget: 'restricted_unlock',
@@ -111,6 +141,7 @@ function buildStepMeta(device: DeviceProfile | null): Record<StepId, StepMeta> {
       cta: 'Allow notifications',
       watchTarget: null,
     },
+    trigger_restricted: getTriggerMeta(),
     unlock_restricted: getUnlockMeta(device),
     usage_access: {
       icon: 'stats-chart',
@@ -160,17 +191,28 @@ export default function PermissionsScreen() {
   const [device, setDevice] = useState<DeviceProfile | null>(null);
   const [platformLoaded, setPlatformLoaded] = useState(false);
 
-  // Restricted-settings gate. On Android 13+, unreviewed apps (sideload OR
-  // Play Store internal testing) must have this unlocked before the OS will
-  // let the user enable Usage Access or Accessibility. Detected up-front so
-  // the unlock step can appear at the right spot in a single linear flow
-  // — no reactive "try and recover" helpers.
-  const [needsRestrictedUnlock, setNeedsRestrictedUnlock] = useState(false);
+  // Restricted-settings gate. On Android 13+ with an install Google hasn't
+  // fully blessed (sideload OR Play internal-testing), Accessibility and
+  // Usage Access toggles are gated until the user grants "Allow restricted
+  // settings" via App Info → ⋮. The kicker: that ⋮ entry only appears
+  // AFTER the user has *attempted* a restricted toggle. So we walk them
+  // through trigger → unlock in that order. Completion is tracked by
+  // "user returned from Settings after we sent them there", not by the
+  // OPSTR_ACCESS_RESTRICTED_SETTINGS AppOps probe (third-party apps get a
+  // default-allowed value from that op — useless as a gate signal).
+  const [triggerVisited, setTriggerVisited] = useState(false);
+  const [unlockVisited, setUnlockVisited] = useState(false);
 
   // Permission state
   const [notificationsGranted, setNotificationsGranted] = useState(false);
   const [usageGranted, setUsageGranted] = useState(false);
   const [accessibilityGranted, setAccessibilityGranted] = useState(false);
+  // Set on the first refresh — if either real permission was already
+  // grantable then, the install isn't gated and we skip both trigger +
+  // unlock steps. We capture this once on mount so a mid-flow grant
+  // doesn't suddenly delete steps from under the user.
+  const [installLikelyGated, setInstallLikelyGated] = useState(true);
+  const initialProbeDoneRef = useRef(false);
 
   const [progressTick, setProgressTick] = useState(0); // trigger re-render
   const bumpProgress = () => setProgressTick((t) => t + 1);
@@ -188,40 +230,50 @@ export default function PermissionsScreen() {
 
   // ─── Step list ─────────────────────────────────────────────────────────
   //
-  // Order matters: unlock_restricted comes BEFORE the permissions it gates.
-  // That way Usage Access and Accessibility toggles won't "malfunction" by
-  // the time the user tries to enable them.
-  //
-  // We always include the unlock step on Android 13+ instead of guessing
-  // from the AppOps probe, because that probe is unreliable on some
-  // OEM/installer combinations (Play Store internal-testing in particular).
-  // If the user really doesn't need it, the grantedMap below flips it to
-  // "done" automatically and the flow walks past it without the user
-  // visiting App Info — a 50ms blink, not a wasted step. Erring on the
-  // side of "include it" prevents the malfunctioning dead-end entirely.
+  // Order: trigger BEFORE unlock BEFORE the real permissions. The trigger
+  // step's whole job is to make the OS surface the ⋮ → "Allow restricted
+  // settings" entry that the unlock step depends on. Skip the trigger +
+  // unlock pair entirely if the initial probe found the install ungated
+  // (the user already has Accessibility or Usage Access grantable —
+  // possible on real Play production installs).
 
   const sdkInt = device?.sdkInt ?? 0;
 
   const stepIds: StepId[] = React.useMemo(() => {
     const list: StepId[] = ['notifications'];
     if (Platform.OS === 'android') {
-      if (sdkInt >= 33) {
-        list.push('unlock_restricted');
+      if (sdkInt >= 33 && installLikelyGated) {
+        // Gated path: summon the ⋮ entry, unlock, then the real
+        // permissions. Accessibility comes immediately after unlock
+        // because the trigger step has already familiarized the user
+        // with the Accessibility list.
+        list.push(
+          'trigger_restricted',
+          'unlock_restricted',
+          'accessibility',
+          'usage_access',
+        );
+      } else {
+        // Ungated path (pre-13, or 13+ already-passed): original order.
+        list.push('usage_access', 'accessibility');
       }
-      list.push('usage_access', 'accessibility');
     }
     return list;
-  }, [sdkInt]);
+  }, [sdkInt, installLikelyGated]);
 
+  // Trigger / unlock are "done" once the user has been sent to the
+  // relevant Settings screen and returned. That's enough — if they
+  // didn't actually do the action, the next step's toggle will fail and
+  // they can tap a pill or the manual re-check link to redo. We also
+  // mark them done if Accessibility or Usage Access ended up granted
+  // (which means the gate was passed somehow).
+  const gatePassed = accessibilityGranted || usageGranted;
   const grantedMap: Record<StepId, boolean> = {
     notifications: notificationsGranted,
-    // Step is "done" only when the AppOps probe explicitly says granted.
-    // If the probe is unreliable or returns ungranted, the user goes
-    // through the unlock step — a single tap on App Info is far cheaper
-    // than the malfunctioning dead-end on the next step.
-    unlock_restricted: !needsRestrictedUnlock,
-    usage_access: usageGranted,
+    trigger_restricted: triggerVisited || gatePassed,
+    unlock_restricted: unlockVisited || gatePassed,
     accessibility: accessibilityGranted,
+    usage_access: usageGranted,
   };
   // Keep progressTick referenced so TS doesn't elide it and React re-renders
   // when the visit flags flip via refs.
@@ -259,15 +311,15 @@ export default function PermissionsScreen() {
     setUsageGranted(u);
     setAccessibilityGranted(a);
 
-    // Re-evaluate the restricted-settings gate every refresh. If the user
-    // just unlocked it, the unlock step flips to "done" automatically and
-    // the flow advances on its own — no extra tap, no stale flag.
-    try {
-      const restrictedGranted =
-        await appUsageService.checkRestrictedSettingsGranted();
-      setNeedsRestrictedUnlock(!restrictedGranted);
-    } catch {
-      // Probe unavailable (very old Android, pre-Tiramisu). Don't block.
+    // First probe only: if either restricted permission is already
+    // grantable, the install isn't gated — we can skip the trigger +
+    // unlock pair. After that, leave installLikelyGated alone so a
+    // mid-flow grant doesn't yank steps out from under the user.
+    if (!initialProbeDoneRef.current) {
+      initialProbeDoneRef.current = true;
+      if (u || a) {
+        setInstallLikelyGated(false);
+      }
     }
 
     return { n, u, a };
@@ -339,6 +391,12 @@ export default function PermissionsScreen() {
         case 'unlock_restricted':
           await appUsageService.openAppInfo();
           break;
+        case 'trigger_restricted':
+          // Same intent as the real Accessibility step. The user is
+          // expected to fail the toggle here — that's how the OS unlocks
+          // the ⋮ → "Allow restricted settings" entry for the next step.
+          await appUsageService.requestAccessibilityPermission();
+          break;
         case 'accessibility':
           await appUsageService.requestAccessibilityPermission();
           break;
@@ -361,19 +419,27 @@ export default function PermissionsScreen() {
     advancingRef.current = true;
     try {
       const { n, u, a } = await refreshPermissions();
-      // needsRestrictedUnlock state is already updated inside
-      // refreshPermissions (from the native AppOps probe). Read it back
-      // via a direct OS check so we don't race React's state batching.
-      let restrictedGranted = true;
-      try {
-        restrictedGranted =
-          await appUsageService.checkRestrictedSettingsGranted();
-      } catch {
-        // probe unavailable — assume granted so we don't gate the flow
+
+      // If we sent the user to a return-detected step (trigger or unlock)
+      // and they just came back, mark it visited. This is what makes those
+      // steps complete — we don't trust the OPSTR_ACCESS_RESTRICTED_SETTINGS
+      // probe because it returns default-allowed for non-privileged callers.
+      let triggerNow = triggerVisited;
+      let unlockNow = unlockVisited;
+      if (lastLaunchedRef.current === 'trigger_restricted') {
+        triggerNow = true;
+        setTriggerVisited(true);
       }
+      if (lastLaunchedRef.current === 'unlock_restricted') {
+        unlockNow = true;
+        setUnlockVisited(true);
+      }
+
+      const gatePassedNow = a || u;
       const latest: Record<StepId, boolean> = {
         notifications: n,
-        unlock_restricted: restrictedGranted,
+        trigger_restricted: triggerNow || gatePassedNow,
+        unlock_restricted: unlockNow || gatePassedNow,
         usage_access: u,
         accessibility: a,
       };
@@ -413,6 +479,17 @@ export default function PermissionsScreen() {
         return;
       }
 
+      // NEVER auto-launch the trigger step either. Its whole point is the
+      // "this will fail on purpose" framing on the card — if we teleport
+      // the user straight into Accessibility Settings without that context,
+      // they'll think the app is broken when the toggle won't budge.
+      if (next === 'trigger_restricted') {
+        setBanner(
+          `Nice ✓ Read the next card before tapping — this one's a bit weird on purpose.`,
+        );
+        return;
+      }
+
       setBanner(`Nice ✓ Opening ${stepMeta[next].title}…`);
       setTimeout(() => {
         launchStep(next, 'auto').catch((e) => {
@@ -441,18 +518,13 @@ export default function PermissionsScreen() {
     }
 
     const { n, u, a } = await refreshPermissions();
-    let restrictedGranted = true;
-    try {
-      restrictedGranted =
-        await appUsageService.checkRestrictedSettingsGranted();
-    } catch {
-      /* probe unavailable */
-    }
     bumpProgress();
 
+    const gatePassedNow = a || u;
     const latest: Record<StepId, boolean> = {
       notifications: n,
-      unlock_restricted: restrictedGranted,
+      trigger_restricted: triggerVisited || gatePassedNow,
+      unlock_restricted: unlockVisited || gatePassedNow,
       usage_access: u,
       accessibility: a,
     };
@@ -485,8 +557,8 @@ export default function PermissionsScreen() {
             .catch(() => null);
           setDevice(profile);
         }
-        // refreshPermissions also sets needsRestrictedUnlock from the
-        // AppOps probe, so the step list is correct on first render.
+        // refreshPermissions also captures installLikelyGated from the
+        // first probe, so the step list is correct on first render.
         await refreshPermissions();
       } catch (e) {
         console.warn('permissions init failed:', e);
@@ -529,6 +601,13 @@ export default function PermissionsScreen() {
       setBanner(null);
       return;
     }
+    // Same idea for trigger_restricted: the "this will fail on purpose"
+    // framing on the card has to land before we send the user into the
+    // expected-failure dance. Don't auto-launch on Start.
+    if (currentStep.id === 'trigger_restricted') {
+      setBanner(null);
+      return;
+    }
     await launchStep(currentStep.id).catch((e) =>
       console.warn('handleStart launch failed:', e),
     );
@@ -552,6 +631,12 @@ export default function PermissionsScreen() {
       setBanner(null);
       return;
     }
+    // Tapping a return-detected pill resets its visited flag — the user is
+    // explicitly redoing the step. Without this, an already-DONE unlock pill
+    // wouldn't actually advance the gate flow when re-tapped, leaving the
+    // user stuck on a still-restricted Accessibility toggle.
+    if (id === 'trigger_restricted') setTriggerVisited(false);
+    if (id === 'unlock_restricted') setUnlockVisited(false);
     await launchStep(id).catch((e) =>
       console.warn('handlePillPress launch failed:', e),
     );
