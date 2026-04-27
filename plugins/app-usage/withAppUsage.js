@@ -687,23 +687,46 @@ class AppUsageMonitorService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action
 
-        // Onboarding watch: start/stop the permission poller. We always call
-        // startForeground so the service is allowed to poll + startActivity
-        // from the background (Android 12+ BAL exemption for FGSes).
+        // CRITICAL: any time onStartCommand runs because of startForegroundService(),
+        // we MUST call startForeground() before returning — even if we plan to
+        // immediately stop. Failing this contract throws
+        // android.app.RemoteServiceException\$ForegroundServiceDidNotStartInTimeException
+        // which is delivered as a FATAL EXCEPTION on the main thread and
+        // crashes the entire app process. When the process dies, the
+        // AccessibilityService (same uid) dies with it and Settings shows
+        // "This service is malfunctioning". Doing the call up-front, before
+        // we branch on action, removes every "but I returned early" footgun.
+        try {
+            startForeground(NOTIFICATION_ID, createNotification())
+        } catch (e: Exception) {
+            Log.e("DopaMenu", "startForeground failed: \${e.message}", e)
+            // If we can't enter foreground we can't legally proceed —
+            // tear down rather than crash the process via the timeout.
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+
+        // Onboarding watch: start/stop the permission poller.
         if (action == ACTION_START_ONBOARDING_WATCH) {
             val target = intent.getStringExtra("target")
             if (target != null) {
-                startForeground(NOTIFICATION_ID, createNotification())
                 startOnboardingWatch(target)
             }
             return START_NOT_STICKY
         }
         if (action == ACTION_STOP_ONBOARDING_WATCH) {
             stopOnboardingWatch()
-            // If nothing else is running, tear the service down so we don't
-            // leave a stale "DopaMenu Active" notification hanging around.
+            // If nothing else needs us, drop foreground state and stop
+            // immediately so the user doesn't see a stale "DopaMenu Active"
+            // notification flash on screen.
             if (monitoringPackages.isEmpty() && runnable == null) {
-                stopSelf()
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                } else {
+                    @Suppress("DEPRECATION")
+                    stopForeground(true)
+                }
+                stopSelf(startId)
             }
             return START_NOT_STICKY
         }
@@ -712,7 +735,6 @@ class AppUsageMonitorService : Service() {
             monitoringPackages = it
         }
 
-        startForeground(NOTIFICATION_ID, createNotification())
         startMonitoring()
 
         // Android 14+ ignores START_STICKY for foreground services.
