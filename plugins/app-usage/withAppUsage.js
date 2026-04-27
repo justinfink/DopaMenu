@@ -1080,8 +1080,10 @@ function getAccessibilityServiceCode(packageName) {
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.app.ActivityOptions
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 
@@ -1159,7 +1161,22 @@ class DopaMenuAccessibilityService : AccessibilityService() {
                     Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
                 )
             }
-            startActivity(intent)
+            // Android 14 (API 34) tightened background activity launches.
+            // AccessibilityServices technically have an exemption, but the
+            // OS only honors it when ActivityOptions explicitly opts into
+            // the background-launch mode. Without these options, the
+            // launch can be silently dropped, and repeated drops are a
+            // known cause of the OS marking the service "malfunctioning"
+            // and disabling it.
+            if (Build.VERSION.SDK_INT >= 34) {
+                val options = ActivityOptions.makeBasic()
+                    .setPendingIntentBackgroundActivityStartMode(
+                        ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
+                    )
+                startActivity(intent, options.toBundle())
+            } else {
+                startActivity(intent)
+            }
         } catch (e: Exception) {
             // If startActivity is blocked for any reason (rare for an
             // AccessibilityService), the UsageStats polling path still fires
@@ -1178,10 +1195,25 @@ class DopaMenuAccessibilityService : AccessibilityService() {
 }
 
 function getAccessibilityConfigXml() {
-  // android:description is mandatory — Android uses it to populate the
-  // "What this service does" explanation on the Accessibility settings page.
-  // If it's missing or unresolved, the OS marks the service as malfunctioning
-  // and the toggle bounces back to off.
+  // Every attribute here matters for keeping the OS from flipping the
+  // service into "This service is malfunctioning" on Android 14/15:
+  //
+  // - android:description is mandatory — Android uses it on the Accessibility
+  //   settings page; missing/unresolved → malfunctioning.
+  //
+  // - android:isAccessibilityTool="false" — REQUIRED for non-assistive
+  //   uses on Android 12+. Pixel 14/15 will mark services malfunctioning
+  //   if this attribute is missing AND the service is being used for
+  //   non-tool purposes (DopaMenu monitors app launches, it's not for
+  //   users with disabilities). Setting it to false also keeps us in
+  //   compliance with Google Play's prominent-disclosure requirement
+  //   that the app surfaces a consent screen before opening Settings.
+  //
+  // - accessibilityFlags MUST include flagRequestAccessibilityButton
+  //   when the user has the "Accessibility shortcut" toggle on (Pixel
+  //   defaults this to on after first-enable). Without the flag, the
+  //   shortcut row exists in Settings but the service can't claim it,
+  //   and the OS reports the mismatch as malfunctioning.
   return `<?xml version="1.0" encoding="utf-8"?>
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/dopamenu_accessibility_description"
@@ -1189,7 +1221,8 @@ function getAccessibilityConfigXml() {
     android:accessibilityFeedbackType="feedbackGeneric"
     android:notificationTimeout="100"
     android:canRetrieveWindowContent="false"
-    android:accessibilityFlags="flagDefault" />
+    android:isAccessibilityTool="false"
+    android:accessibilityFlags="flagDefault|flagRequestAccessibilityButton|flagIncludeNotImportantViews" />
 `;
 }
 

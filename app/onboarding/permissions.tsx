@@ -311,13 +311,23 @@ export default function PermissionsScreen() {
     setUsageGranted(u);
     setAccessibilityGranted(a);
 
-    // First probe only: if either restricted permission is already
-    // grantable, the install isn't gated — we can skip the trigger +
-    // unlock pair. After that, leave installLikelyGated alone so a
-    // mid-flow grant doesn't yank steps out from under the user.
+    // First probe only: ask the OS who installed us. com.android.vending
+    // (Play Store, including Internal Testing) is NEVER subject to the
+    // "Allow restricted settings" gate — the trigger + unlock onboarding
+    // pair would just confuse Play users (no ⋮ entry will appear because
+    // there's nothing to gate). For sideloads/ADB/file-manager installs
+    // we keep the gate steps in. We also skip the gate if the user
+    // already has either real permission (defensive fallback for cases
+    // where the installer probe fails).
     if (!initialProbeDoneRef.current) {
       initialProbeDoneRef.current = true;
-      if (u || a) {
+      let isRestrictedInstall = true;
+      try {
+        isRestrictedInstall = await appUsageService.checkIsRestrictedInstall();
+      } catch {
+        // Probe failed — fall back to the granted-permission heuristic.
+      }
+      if (!isRestrictedInstall || u || a) {
         setInstallLikelyGated(false);
       }
     }
