@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { Card, Button, ProgressRing, UrgeButton } from '../../src/components';
+import { Card, Button, ProgressRing, UrgeButton, NotificationsDeniedBanner } from '../../src/components';
 import { useUserStore } from '../../src/stores/userStore';
 import { useInterventionStore } from '../../src/stores/interventionStore';
 import { usePortfolioStore } from '../../src/stores/portfolioStore';
@@ -109,6 +109,7 @@ export default function DashboardScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
+      <NotificationsDeniedBanner />
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.content}

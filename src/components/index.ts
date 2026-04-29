@@ -6,3 +6,4 @@ export { PortfolioCategory } from './PortfolioCategory';
 export { ProgressRing } from './ProgressRing';
 export { UrgeButton } from './UrgeButton';
 export { default as AppPicker } from './AppPicker';
+export { default as NotificationsDeniedBanner } from './NotificationsDeniedBanner';

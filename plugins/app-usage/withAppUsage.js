@@ -116,7 +116,7 @@ function withAppUsageManifest(config) {
     }
 
     // Add <queries> for package visibility on Android 11+ (without this,
-    // UsageStats and PackageManager calls may silently skip tracked apps)
+    // UsageStats and PackageManager calls may silently skip tracked apps).
     if (!manifest.queries) manifest.queries = [{}];
     const queries = manifest.queries[0];
     if (!queries.package) queries.package = [];
@@ -129,6 +129,30 @@ function withAppUsageManifest(config) {
       if (!queries.package.some((p) => p.$?.['android:name'] === pkg)) {
         queries.package.push({ $: { 'android:name': pkg } });
       }
+    }
+
+    // Generic launcher visibility: declare an <intent> query for MAIN/LAUNCHER
+    // so installedAppsService can probe ALL catalog apps (problem + redirect)
+    // via Linking.canOpenURL("intent://...;package=X;end") without needing each
+    // package listed individually. This is the Google-blessed pattern for
+    // pickers/launchers and does NOT require QUERY_ALL_PACKAGES, so Play
+    // review treats it as low-risk. Without this, only the 8 packages above
+    // appear as "installed" on Android 11+ — a pre-existing gap in the
+    // redirect picker that hid Spotify, Audible, Headspace, etc.
+    if (!queries.intent) queries.intent = [];
+    const hasLauncherIntent = queries.intent.some((it) => {
+      const acts = it.action || [];
+      const cats = it.category || [];
+      return (
+        acts.some((a) => a.$?.['android:name'] === 'android.intent.action.MAIN') &&
+        cats.some((c) => c.$?.['android:name'] === 'android.intent.category.LAUNCHER')
+      );
+    });
+    if (!hasLauncherIntent) {
+      queries.intent.push({
+        action: [{ $: { 'android:name': 'android.intent.action.MAIN' } }],
+        category: [{ $: { 'android:name': 'android.intent.category.LAUNCHER' } }],
+      });
     }
 
     // Add tools namespace if not present
@@ -214,6 +238,7 @@ function getModuleCode(packageName) {
 
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.AppOpsManager
+import android.app.NotificationManager
 import android.app.usage.UsageStats
 import android.app.usage.UsageStatsManager
 import android.content.Context
@@ -221,6 +246,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Process
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
 import com.facebook.react.bridge.*
@@ -236,6 +262,26 @@ class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
         var monitoringPackages: List<String> = emptyList()
         var instance: DopaMenuAppUsageModule? = null
 
+        // Stable id for the user-facing intervention notification. Constant so
+        // we can cancel a stale post when the modal mounts (otherwise the
+        // service was using a fresh timestamp id and we couldn't target it).
+        const val INTERVENTION_NOTIF_ID = 2001
+
+        // Cross-path debounce: any time EITHER the AccessibilityService or the
+        // FGS poller dispatches an intervention, this timestamp is set. Both
+        // paths must check it before dispatching their own. Without this, a
+        // single Instagram launch fires the modal once via Accessibility (real-
+        // time) and again ~2s later via the FGS poll — the "stutter" testers
+        // saw. Uses elapsedRealtime so wall-clock changes don't break it.
+        @Volatile @JvmField var lastInterventionDispatchAt: Long = 0L
+        const val INTERVENTION_DEBOUNCE_MS = 1500L
+
+        // True while the JS-side intervention modal is mounted on screen. The
+        // FGS poller checks this before posting the HIGH-priority full-screen-
+        // intent notification — if the modal is up, the user already sees
+        // DopaMenu and a stacked notification just adds noise.
+        @Volatile @JvmField var modalActive: Boolean = false
+
         // Cross-service suppression map. Keyed by packageName, value is the
         // absolute epoch millis until which BOTH the FGS polling path AND the
         // AccessibilityService must skip firing an intercept for that package.
@@ -249,7 +295,9 @@ class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
         //
         // JS calls suppressIntercept(packageName, durationMs) when the user
         // explicitly chose a non-intercepting action (continue / dismiss /
-        // accept an alternative). 30s is the standard window.
+        // accept an alternative). 5s is the standard window — long enough to
+        // cover the trigger app refocusing + a couple of activity transitions,
+        // short enough that a deliberate re-launch isn't silently dropped.
         val suppressedUntil: ConcurrentHashMap<String, Long> = ConcurrentHashMap()
 
         fun isSuppressed(packageName: String): Boolean {
@@ -259,6 +307,32 @@ class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
                 return false
             }
             return true
+        }
+
+        /**
+         * Cross-path gate. Returns true and updates the dispatch timestamp if
+         * an intervention should fire for this package right now; returns
+         * false if we should swallow it because (a) the package is in the
+         * post-dismissal suppression window or (b) another path already
+         * dispatched within INTERVENTION_DEBOUNCE_MS.
+         *
+         * Both AccessibilityService.onAccessibilityEvent AND
+         * AppUsageMonitorService.checkForegroundApp must call this BEFORE
+         * starting the intervention activity. Whichever wins the race
+         * latches the timestamp; the loser silently drops.
+         */
+        fun shouldDispatchIntervention(packageName: String): Boolean {
+            if (isSuppressed(packageName)) return false
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastInterventionDispatchAt < INTERVENTION_DEBOUNCE_MS) return false
+            lastInterventionDispatchAt = now
+            return true
+        }
+
+        /** Reset the debounce so a fallback path (e.g. FGS notification when
+         * Accessibility's startActivity got BAL-blocked) can fire right away. */
+        fun resetInterventionDebounce() {
+            lastInterventionDispatchAt = 0L
         }
 
         /** Called by DopaMenuAccessibilityService on the main thread */
@@ -369,6 +443,31 @@ class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
         try {
             val until = System.currentTimeMillis() + durationMs.toLong()
             suppressedUntil[packageName] = until
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
+
+    // JS calls this on intervention-modal mount/unmount. While the modal is
+    // up, the FGS poller skips its HIGH-priority full-screen-intent
+    // notification — the user already sees DopaMenu, a tray notification on
+    // top is just noise. We also cancel any in-flight intervention
+    // notification so the brief race window between "service posts
+    // notification" and "modal mounts" doesn't leave a stale notification
+    // sitting in the shade.
+    @ReactMethod
+    fun setModalActive(active: Boolean, promise: Promise) {
+        try {
+            modalActive = active
+            if (active) {
+                try {
+                    val nm = reactApplicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    nm.cancel(INTERVENTION_NOTIF_ID)
+                } catch (e: Exception) {
+                    // Best-effort cleanup. Not worth surfacing.
+                }
+            }
             promise.resolve(null)
         } catch (e: Exception) {
             promise.reject("ERROR", e.message)
@@ -835,9 +934,12 @@ class AppUsageMonitorService : Service() {
             monitoringPackages.contains(lastResumedPackage)) {
 
             lastForegroundApp = lastResumedPackage
-            // Suppression window: when JS just told us the user explicitly
-            // chose to enter this app, skip the intercept so we don't loop.
-            if (DopaMenuAppUsageModule.isSuppressed(lastResumedPackage)) {
+            // Cross-path gate. shouldDispatchIntervention checks both the
+            // per-package suppression window (set by JS when the user just
+            // chose to continue) AND the cross-path debounce (set whenever
+            // EITHER this poller or the AccessibilityService just fired).
+            // Whichever path got there first latches the timestamp; we drop.
+            if (!DopaMenuAppUsageModule.shouldDispatchIntervention(lastResumedPackage)) {
                 return
             }
             onTrackedAppLaunched(lastResumedPackage)
@@ -874,6 +976,25 @@ class AppUsageMonitorService : Service() {
             launchedDirectly = true
         } catch (e: Exception) {
             Log.w("DopaMenu", "Direct startActivity blocked, using full-screen intent: \${e.message}")
+            // Let a fallback path fire immediately — without resetting, the
+            // 1.5s cross-path debounce we just claimed would gate the
+            // notification fallback too, and the user would see nothing.
+            DopaMenuAppUsageModule.resetInterventionDebounce()
+        }
+
+        // Notification posting strategy:
+        //   - launchedDirectly == true: the modal is opening / already open.
+        //     Don't post anything. The modal IS the user-visible interception;
+        //     a tray notification stacked on top is the "pops up a few times"
+        //     overwhelm that testers reported.
+        //   - launchedDirectly == false AND modal already on screen:
+        //     also skip — the AccessibilityService got there first and the
+        //     user already sees DopaMenu.
+        //   - launchedDirectly == false AND no modal: post the HIGH-priority
+        //     full-screen-intent notification as the BAL fallback. Without
+        //     this, on Pixel/AOSP without Accessibility the user gets nothing.
+        if (launchedDirectly || DopaMenuAppUsageModule.modalActive) {
+            return
         }
 
         val pendingIntent = PendingIntent.getActivity(
@@ -907,21 +1028,15 @@ class AppUsageMonitorService : Service() {
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .setContentIntent(pendingIntent)
             .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setPriority(if (launchedDirectly) NotificationCompat.PRIORITY_LOW else NotificationCompat.PRIORITY_MAX)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setAutoCancel(true)
-
-        // Full-screen intent: when direct startActivity was blocked, ask the OS
-        // to surface the intervention as if it were a full-screen alert. This
-        // requires USE_FULL_SCREEN_INTENT in the manifest (granted by default
-        // on Android <14; prompted at first use on Android 14+).
-        if (!launchedDirectly) {
-            builder.setFullScreenIntent(pendingIntent, true)
-        }
+            .setFullScreenIntent(pendingIntent, true)
 
         try {
+            // Stable id so setModalActive() can cancel us once the modal mounts.
             getSystemService(NotificationManager::class.java)
-                .notify(System.currentTimeMillis().toInt(), builder.build())
+                .notify(DopaMenuAppUsageModule.INTERVENTION_NOTIF_ID, builder.build())
         } catch (e: Exception) {
             Log.e("DopaMenu", "Notification post failed: \${e.message}")
         }
@@ -1116,11 +1231,6 @@ import android.view.accessibility.AccessibilityEvent
 // and overlay-like instead of a notification the user has to tap.
 class DopaMenuAccessibilityService : AccessibilityService() {
 
-    // Throttle foreground-intent spam. A single window-state change can fire
-    // the event multiple times as activities transition.
-    private var lastInterceptedPackage: String? = null
-    private var lastInterceptTime: Long = 0L
-
     override fun onServiceConnected() {
         // Do NOT set serviceInfo programmatically here. Assigning a fresh
         // AccessibilityServiceInfo() replaces the XML config wholesale,
@@ -1144,18 +1254,14 @@ class DopaMenuAccessibilityService : AccessibilityService() {
             // Only intercept apps the user is tracking
             if (!DopaMenuAppUsageModule.monitoringPackages.contains(pkg)) return
 
-            // Suppression window set by JS when the user explicitly chose to
-            // enter this app (e.g. tapped "Keep doing what I was doing"). If
-            // we don't honor it, we loop: trigger app opens → intercept →
-            // user continues → trigger app opens → intercept → …
-            if (DopaMenuAppUsageModule.isSuppressed(pkg)) return
-
-            // Ignore repeats within 5s for the same package — stops us from
-            // launching DopaMenu over itself on activity transitions.
-            val now = System.currentTimeMillis()
-            if (pkg == lastInterceptedPackage && now - lastInterceptTime < 5000L) return
-            lastInterceptedPackage = pkg
-            lastInterceptTime = now
+            // Cross-path gate. shouldDispatchIntervention combines the
+            // user-explicit suppression window AND a 1.5s cross-path debounce
+            // that synchronizes us with the FGS poller. A single Instagram
+            // launch fires WINDOW_STATE_CHANGED multiple times as activities
+            // transition (splash → feed) — the debounce swallows the
+            // aftershocks. The FGS poller's 2s tick also calls this same gate,
+            // so whichever fires first wins.
+            if (!DopaMenuAppUsageModule.shouldDispatchIntervention(pkg)) return
 
             // Forward to the module so JS can record analytics if foregrounded
             try {
@@ -1202,8 +1308,11 @@ class DopaMenuAccessibilityService : AccessibilityService() {
         } catch (e: Exception) {
             // If startActivity is blocked for any reason (rare for an
             // AccessibilityService), the UsageStats polling path still fires
-            // a notification as a fallback.
+            // a notification as a fallback. Reset the cross-path debounce so
+            // the next FGS poll within the 1.5s window isn't gated — we need
+            // SOME path to surface the intervention.
             Log.w("DopaMenu", "Accessibility startActivity blocked: \${e.message}")
+            DopaMenuAppUsageModule.resetInterventionDebounce()
         }
     }
 

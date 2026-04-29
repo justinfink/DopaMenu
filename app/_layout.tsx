@@ -85,6 +85,8 @@ export default function RootLayout() {
       // iOS: re-arm the Shield on every app start so it survives reboots,
       // package updates, and user toggles. If the user's suppression window
       // elapsed while we weren't running, this also re-applies the block.
+      // startBlocking() is idempotent — if the Shield was armed within the
+      // last 5 min it short-circuits and doesn't burn extension cycles.
       if (
         Platform.OS === 'ios' &&
         currentUser.preferences.appMonitoringEnabled &&
@@ -116,6 +118,13 @@ export default function RootLayout() {
           trigger: 'app_detection',
           detectedApp: event.label,
         });
+        // Cover the FGS-poll race: suppress + flag modal-active immediately.
+        // Without this, the poller's next 2s tick can re-fire the same
+        // intervention before the modal mounts.
+        if (event.packageName) {
+          void appUsageService.suppressIntercept(event.packageName, 5000);
+        }
+        void appUsageService.setModalActive(true);
         const situation = simulateSituation();
         const decision = generateIntervention(
           situation,
@@ -163,8 +172,14 @@ export default function RootLayout() {
             }
             markInterventionShown();
             if (shieldName) {
+              // Apple's display name can include accents / unicode quirks
+              // ("Instagram" vs. "ínstagram"). Normalize on both sides so a
+              // weird spelling doesn't lose us the package name.
+              const norm = (s: string) =>
+                s.normalize('NFKD').replace(/\s+/g, '').toLowerCase();
+              const target = norm(shieldName);
               const match = currentUser.preferences.trackedApps.find(
-                (a) => a.label.toLowerCase() === shieldName!.toLowerCase()
+                (a) => norm(a.label) === target
               );
               triggerPackageName = match?.packageName;
             }
@@ -197,6 +212,18 @@ export default function RootLayout() {
               }
             }
           }
+        }
+        // Suppress the trigger package and flag the modal as active BEFORE we
+        // navigate. The FGS poller in the native service polls every 2s — if
+        // we wait until intervention.tsx mounts to set these flags, the next
+        // poll cycle slips through and the user gets a duplicate intervention
+        // notification stacked on the modal. Doing it here guarantees the
+        // first foreground flip after navigation is already covered.
+        if (Platform.OS === 'android') {
+          if (triggerPackageName) {
+            void appUsageService.suppressIntercept(triggerPackageName, 5000);
+          }
+          void appUsageService.setModalActive(true);
         }
         const situation = simulateSituation();
         const decision = generateIntervention(

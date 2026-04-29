@@ -11,6 +11,7 @@ import {
   Linking,
   Platform,
   BackHandler,
+  Alert,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -24,13 +25,22 @@ import {
   suppressBlocking as suppressIosBlocking,
   readShieldTrigger,
 } from '../src/services/iosFamilyControls';
+import { APP_CATALOG } from '../src/constants/appCatalog';
 import { colors, spacing, borderRadius, typography, shadows } from '../src/constants/theme';
 
 // How long to suppress re-intercepts on the trigger package after the user
 // dismisses/continues/accepts. Enough to cover the trigger app coming back
 // to foreground + a few activity transitions, without leaving the user
-// permanently exempt if they open it again later.
-const SUPPRESSION_WINDOW_MS = 30000;
+// permanently exempt if they open it again later. Also matches the native
+// cross-path debounce floor — see DopaMenuAppUsageModule.
+const SUPPRESSION_WINDOW_MS = 5000;
+
+// Throttle "I'll do this" double-taps. handleAccept calls Linking.openURL,
+// and a rapid double-tap can queue two intent launches before the first
+// modal animation finishes — visible to the user as a flicker into the
+// alternative app twice. 1s is well above accidental double-tap and well
+// below any deliberate retry.
+const ACCEPT_RATE_LIMIT_MS = 1000;
 
 // ============================================
 // Intervention Modal
@@ -99,7 +109,20 @@ async function launchIntervention(intervention: InterventionCandidate): Promise<
       await Linking.openURL(launchTarget);
       return true;
     } catch {
-      // Silently ignore — nothing to route to
+      // Fall through to store fallback
+    }
+  }
+
+  // Last resort on Android: if the user picked a redirect app they don't have
+  // installed yet, send them to the Play Store listing instead of failing
+  // silently. Better to land them somewhere actionable than nowhere.
+  if (Platform.OS === 'android' && launchAppPackage) {
+    try {
+      const playUrl = `https://play.google.com/store/apps/details?id=${launchAppPackage}`;
+      await Linking.openURL(playUrl);
+      return true;
+    } catch {
+      // Out of options.
     }
   }
   return false;
@@ -107,11 +130,17 @@ async function launchIntervention(intervention: InterventionCandidate): Promise<
 
 // When the intervention has no launch fields (e.g. "take 3 breaths") or the
 // user taps "continue what I was doing", we want to put them back where they
-// were — not leave them stuck on a DopaMenu screen with no back stack. On
-// Android we exit the activity so the OS returns to the previously focused
-// app (or the home screen). On iOS we have no way to programmatically leave
-// an app, so we send the user to the tabs view.
-async function exitDopaMenu(triggerPackage: string | null): Promise<void> {
+// were — not leave them stuck on a DopaMenu screen with no back stack.
+//
+// Android: an intent:// URL re-opens the trigger app, then we exitApp() so
+// the OS returns to whatever was on top.
+//
+// iOS: we can't programmatically "leave" an app, but if we know the trigger
+// app's URL scheme (Instagram, TikTok, YouTube, Reddit, etc. all expose
+// one), we can openURL(scheme://) which iOS treats as an app switch. That
+// sends the user where they were going. If we don't know the scheme, we at
+// least don't strand them — we land on the tabs view.
+async function exitDopaMenu(triggerPackage: string | null, triggerLabel: string | null): Promise<void> {
   if (Platform.OS === 'android' && triggerPackage) {
     const intentUrl = buildAndroidIntentUrl(triggerPackage);
     try {
@@ -122,11 +151,38 @@ async function exitDopaMenu(triggerPackage: string | null): Promise<void> {
     }
   }
   if (Platform.OS === 'android') {
-    // Exits the current activity — Android returns to the previous task.
     BackHandler.exitApp();
     return;
   }
-  // iOS: land somewhere valid so the user doesn't see a blank screen.
+
+  // iOS: try to deep-link back into the trigger app. Match by package name
+  // (== androidPackage in the catalog), iosBundleId, or label as a last
+  // resort — whatever we have on the trigger.
+  if (Platform.OS === 'ios' && (triggerPackage || triggerLabel)) {
+    const norm = (s?: string | null) =>
+      (s ?? '').normalize('NFKD').replace(/\s+/g, '').toLowerCase();
+    const t = norm(triggerLabel);
+    const p = norm(triggerPackage);
+    const entry = APP_CATALOG.find(
+      (a) =>
+        (a.androidPackage && norm(a.androidPackage) === p) ||
+        (a.iosBundleId && norm(a.iosBundleId) === p) ||
+        (a.id && norm(a.id) === p) ||
+        (a.label && norm(a.label) === t),
+    );
+    if (entry?.iosScheme) {
+      try {
+        const supported = await Linking.canOpenURL(entry.iosScheme);
+        if (supported) {
+          await Linking.openURL(entry.iosScheme);
+          return;
+        }
+      } catch {
+        // fall through to tabs
+      }
+    }
+  }
+
   if (router.canGoBack()) {
     router.back();
   } else {
@@ -144,6 +200,10 @@ export default function InterventionScreen() {
 
   const slideAnim = useRef(new Animated.Value(SCREEN_HEIGHT)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
+  // Last accept-time guard for rate-limiting double-taps. Lives across re-
+  // renders but resets on unmount, which is what we want — a fresh modal
+  // mount means a legitimately new intervention.
+  const lastAcceptAtRef = useRef(0);
 
   useEffect(() => {
     // Animate in
@@ -163,6 +223,21 @@ export default function InterventionScreen() {
 
     // Haptic feedback on open
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    // Tell the native FGS poller the modal is up. Belt-and-suspenders with
+    // the same call in app/_layout.tsx — _layout sets it BEFORE navigation
+    // (which catches the FGS poll race), this catches the case where the
+    // modal got mounted via some other path (e.g. notification-tap fallback
+    // when startActivity was BAL-blocked). cancel() of any stale notification
+    // happens inside setModalActive(true) in the native module.
+    if (Platform.OS === 'android') {
+      void appUsageService.setModalActive(true);
+    }
+    return () => {
+      if (Platform.OS === 'android') {
+        void appUsageService.setModalActive(false);
+      }
+    };
   }, []);
 
   // closeAndExit: animate out, clear store, then either (a) leave the user on
@@ -171,13 +246,12 @@ export default function InterventionScreen() {
   // on a back-stack-empty white screen, which was the custom-tracked-app bug.
   const closeAndExit = (launched: boolean) => {
     const triggerPackage = activeTriggerPackage;
-    // Suppress the trigger package before we hand control back to it. The FGS
-    // poller and AccessibilityService both see the foreground flip right after
-    // we exit — without suppression, they'd immediately re-fire this same
-    // intervention and trap the user in a loop. We suppress in every path
-    // (continue, dismiss, accept) because even handleAccept can land the user
-    // back in the trigger app when the chosen intervention has no launch
-    // target of its own.
+    // Look up label so iOS exitDopaMenu can find the right scheme.
+    const trackedHit = user?.preferences.trackedApps.find(
+      (a) => a.packageName === triggerPackage,
+    );
+    const triggerLabel = trackedHit?.label ?? null;
+
     if (Platform.OS === 'android' && triggerPackage) {
       appUsageService.suppressIntercept(triggerPackage, SUPPRESSION_WINDOW_MS);
     }
@@ -194,15 +268,20 @@ export default function InterventionScreen() {
       }),
     ]).start(() => {
       clearActiveIntervention();
-      // If an external app was launched via Linking, the OS already moved the
-      // user away; no exit needed (calling exitApp would race & sometimes
-      // kill the process before the other app foregrounds cleanly).
       if (launched) return;
-      exitDopaMenu(triggerPackage);
+      exitDopaMenu(triggerPackage, triggerLabel);
     });
   };
 
   const handleAccept = async (intervention?: InterventionCandidate) => {
+    // Rate-limit double-taps so we don't queue two intent launches for the
+    // same accept. Without this, a quick double-tap on "I'll do this" can
+    // briefly flicker into the alternative app twice while the first launch
+    // is still resolving.
+    const now = Date.now();
+    if (now - lastAcceptAtRef.current < ACCEPT_RATE_LIMIT_MS) return;
+    lastAcceptAtRef.current = now;
+
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     recordOutcome('accepted');
     const chosen = intervention ?? displayIntervention;
@@ -216,18 +295,27 @@ export default function InterventionScreen() {
     closeAndExit(false);
   };
 
-  const handleContinue = () => {
+  const handleContinue = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     recordOutcome('continued_default');
     // iOS: lift the Shield for the suppression window so the user's next tap
     // on the trigger app goes through. The DeviceActivityMonitor extension
     // re-arms the shield autonomously after cumulative usage crosses the
-    // threshold — no host-app wake-up required.
+    // threshold — no host-app wake-up required. If something goes wrong, we
+    // tell the user instead of silently keeping them blocked.
     if (Platform.OS === 'ios') {
       const { tokenHash } = readShieldTrigger();
-      suppressIosBlocking(tokenHash).catch((err) =>
-        console.warn('[iOSFamilyControls] suppress failed', err),
-      );
+      try {
+        await suppressIosBlocking(tokenHash);
+      } catch (err: any) {
+        Alert.alert(
+          "Couldn't unlock that app",
+          "DopaMenu tried to step out of the way for 30 seconds, but iPhone said no. " +
+            "Try again, or open Settings → Screen Time → DopaMenu and toggle it off and back on. " +
+            (err?.message ? `\n\nDetails: ${err.message}` : ''),
+        );
+        return;
+      }
     }
     closeAndExit(false);
   };

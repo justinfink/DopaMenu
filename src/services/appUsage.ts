@@ -50,6 +50,7 @@ interface AppUsageModule {
   stopOnboardingWatch(): Promise<void>;
   getDeviceProfile(): Promise<DeviceProfile>;
   suppressIntercept(packageName: string, durationMs: number): Promise<void>;
+  setModalActive(active: boolean): Promise<void>;
 }
 
 export interface DeviceProfile {
@@ -389,12 +390,30 @@ export const appUsageService = {
    * poller + AccessibilityService re-fire on the resulting foreground flip
    * and the user gets trapped in an intercept loop.
    */
-  async suppressIntercept(packageName: string, durationMs: number = 30000): Promise<void> {
+  async suppressIntercept(packageName: string, durationMs: number = 5000): Promise<void> {
     if (!this.isSupported() || !NativeAppUsage?.suppressIntercept) return;
     try {
       await NativeAppUsage.suppressIntercept(packageName, durationMs);
     } catch (error) {
       console.error('[AppUsage] suppressIntercept failed:', error);
+    }
+  },
+
+  /**
+   * Tell the native FGS poller whether the JS-side intervention modal is
+   * currently mounted. While true, the poller skips its HIGH-priority
+   * full-screen-intent notification (the "Caught yourself!" one) — the
+   * user already sees DopaMenu, a tray notification stacked on top is
+   * just noise. Setting it true ALSO cancels any in-flight intervention
+   * notification posted during the brief race window before the modal
+   * mounted, so it can't sit stale in the shade.
+   */
+  async setModalActive(active: boolean): Promise<void> {
+    if (!this.isSupported() || !NativeAppUsage?.setModalActive) return;
+    try {
+      await NativeAppUsage.setModalActive(active);
+    } catch (error) {
+      console.error('[AppUsage] setModalActive failed:', error);
     }
   },
 };

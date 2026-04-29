@@ -22,6 +22,10 @@ import {
 } from '../../src/services/appUsage';
 import { useResponsive } from '../../src/utils/responsive';
 import { colors } from '../../src/constants/theme';
+import {
+  hasProblemAppSelection,
+  getAuthorizationStatus as getIosFamilyControlsStatus,
+} from '../../src/services/iosFamilyControls';
 
 // ─── Permissions screen ───────────────────────────────────────────────────────
 //
@@ -137,8 +141,14 @@ function buildStepMeta(device: DeviceProfile | null): Record<StepId, StepMeta> {
     notifications: {
       icon: 'notifications',
       title: 'Notifications',
-      activeBlurb: 'So we can step in at the right moment.',
-      cta: 'Allow notifications',
+      // Concrete and human: tell the user what notifications are actually
+      // FOR — the gentle reminders + the "you opened Instagram" alert when
+      // the in-app modal can't surface. Without notifications they still
+      // get blocking + the redirect modal, but they lose the at-the-moment
+      // nudge that makes DopaMenu feel like a friend, not a wall.
+      activeBlurb:
+        "DopaMenu sends you a gentle reminder when you reach for a distraction app, plus a quick check-in at moments you usually scroll. We really recommend turning these on — without them DopaMenu still works, but the magic of \"caught yourself\" mostly happens here. You can change your mind any time.",
+      cta: 'Turn on notifications',
       watchTarget: null,
     },
     trigger_restricted: getTriggerMeta(),
@@ -657,6 +667,15 @@ export default function PermissionsScreen() {
     await recheckOnly();
   };
 
+  // "Skip — I'll decide later" for the notifications step. The user can
+  // proceed without ever seeing the OS prompt; we still register them as
+  // having declined for now so the home-screen banner can offer to
+  // re-enable later. Granted state stays whatever the OS already says.
+  const handleSkipNotifications = async () => {
+    setBanner(null);
+    await advanceAfterRecheck();
+  };
+
   // Explicit "decline" path for Accessibility. Google's prominent disclosure
   // policy expects the in-app screen to offer a clear opt-out before sending
   // the user to system settings. We don't actually advance past this step
@@ -684,32 +703,55 @@ export default function PermissionsScreen() {
 
   if (!platformLoaded) return <SafeAreaView style={styles.container} />;
 
+  // iOS-specific copy: only one permission step (notifications), and the
+  // word "permissions" plural is misleading. Keep Android copy unchanged.
+  const headerCopy =
+    Platform.OS === 'ios'
+      ? {
+          stepLabel: total <= 1 ? 'LAST STEP' : `STEP ${completed + 1} OF ${total}`,
+          title: allDone
+            ? "You're all set."
+            : !started
+            ? 'One small thing left.'
+            : currentStep
+            ? 'Allow notifications'
+            : '',
+          subtitle: allDone
+            ? "Notifications are on, and the Shield's armed for the apps you picked. DopaMenu will step in for you when you reach for them."
+            : !started
+            ? "DopaMenu sometimes uses a notification to gently get your attention — for example if Apple's Shield can't open the app for some reason. One tap and you're done."
+            : currentStep
+            ? "Tap the button below. iPhone will ask if DopaMenu can send notifications. Tap Allow."
+            : '',
+        }
+      : {
+          stepLabel: `PERMISSIONS · ${completed} OF ${total}`,
+          title: allDone
+            ? "You're all set."
+            : !started
+            ? 'One tap, then just flip the toggles.'
+            : currentStep
+            ? stepMeta[currentStep.id].title
+            : '',
+          subtitle: allDone
+            ? 'Every permission is granted. DopaMenu is ready to step in.'
+            : !started
+            ? "We'll walk you through each permission. Between steps we'll bring you back here — you just follow the on-screen list."
+            : currentStep
+            ? stepMeta[currentStep.id].activeBlurb
+            : '',
+        };
+
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView
         contentContainerStyle={[styles.content, { padding: r.scale(20) }]}
       >
         <Text style={[styles.step, { fontSize: r.ms(11) }]}>
-          PERMISSIONS · {completed} OF {total}
+          {headerCopy.stepLabel}
         </Text>
-        <Text style={[styles.title, { fontSize: r.ms(26) }]}>
-          {allDone
-            ? "You're all set."
-            : !started
-            ? 'One tap, then just flip the toggles.'
-            : currentStep
-            ? stepMeta[currentStep.id].title
-            : ''}
-        </Text>
-        <Text style={[styles.subtitle, { fontSize: r.ms(14) }]}>
-          {allDone
-            ? 'Every permission is granted. DopaMenu is ready to step in.'
-            : !started
-            ? "We'll walk you through each permission. Between steps we'll bring you back here — you just follow the on-screen list."
-            : currentStep
-            ? stepMeta[currentStep.id].activeBlurb
-            : ''}
-        </Text>
+        <Text style={[styles.title, { fontSize: r.ms(26) }]}>{headerCopy.title}</Text>
+        <Text style={[styles.subtitle, { fontSize: r.ms(14) }]}>{headerCopy.subtitle}</Text>
 
         {started && currentStep && (
           <View style={[styles.activeCard, { padding: r.scale(16) }]}>
@@ -781,6 +823,16 @@ export default function PermissionsScreen() {
                 </Text>
               </Pressable>
             )}
+            {currentStep.id === 'notifications' && (
+              <Pressable
+                onPress={handleSkipNotifications}
+                style={[styles.checkLink, { paddingVertical: r.scale(8) }]}
+              >
+                <Text style={[styles.declineLinkText, { fontSize: r.ms(12) }]}>
+                  Skip — I'll decide later
+                </Text>
+              </Pressable>
+            )}
           </View>
         )}
 
@@ -844,23 +896,7 @@ export default function PermissionsScreen() {
         </View>
 
         {Platform.OS === 'ios' && (
-          <View
-            style={[
-              styles.iosNote,
-              { padding: r.scale(14), marginTop: r.scale(18) },
-            ]}
-          >
-            <Ionicons
-              name="information-circle"
-              size={r.scale(18)}
-              color="#7A6F85"
-            />
-            <Text style={[styles.iosNoteText, { fontSize: r.ms(12) }]}>
-              On iOS, DopaMenu intercepts your chosen apps through Apple's
-              Screen Time framework — you set that up in step 1. We'll also
-              offer an optional one-tap Shortcut for a tap-free redirect.
-            </Text>
-          </View>
+          <IosShieldStatusCard scale={r.scale} ms={r.ms} />
         )}
       </ScrollView>
 
@@ -885,6 +921,94 @@ export default function PermissionsScreen() {
         )}
       </View>
     </SafeAreaView>
+  );
+}
+
+/**
+ * iOS-only banner that tells the user, in plain English, whether DopaMenu's
+ * Shield is actually wired up. We probe the two things that matter:
+ *   1. Did Apple grant Family Controls authorization? (status === 'approved')
+ *   2. Did the user save a problem-app selection in step 1?
+ *
+ * If either is missing, this card explains it and offers a single button to
+ * jump back to step 1. If both are good, it reassures them that the Shield
+ * is on and silently doing its job.
+ */
+function IosShieldStatusCard({ scale, ms }: { scale: (n: number) => number; ms: (n: number) => number }) {
+  const [shieldReady, setShieldReady] = useState(false);
+  const [authStatus, setAuthStatus] = useState<'approved' | 'denied' | 'notDetermined' | 'unknown'>('unknown');
+  const [hasSelection, setHasSelection] = useState(false);
+
+  // Re-check every time we come back to this screen (user might have just
+  // returned from setting things up).
+  useEffect(() => {
+    const check = () => {
+      const status = getIosFamilyControlsStatus();
+      const sel = hasProblemAppSelection();
+      setAuthStatus(status);
+      setHasSelection(sel);
+      setShieldReady(status === 'approved' && sel);
+    };
+    check();
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') check();
+    });
+    return () => sub.remove();
+  }, []);
+
+  if (shieldReady) {
+    return (
+      <View
+        style={[
+          styles.iosNote,
+          styles.iosNoteOk,
+          { padding: scale(14), marginTop: scale(18) },
+        ]}
+      >
+        <Ionicons name="shield-checkmark" size={scale(20)} color="#3B7A4B" />
+        <Text style={[styles.iosNoteText, { fontSize: ms(12), color: '#2E5535' }]}>
+          The Shield's armed. When you open one of the apps you picked,
+          DopaMenu will gently step in. You can change which apps any time
+          from Settings.
+        </Text>
+      </View>
+    );
+  }
+
+  // Something's off — explain it human-style and route them back to fix.
+  let body = '';
+  if (authStatus !== 'approved' && !hasSelection) {
+    body =
+      "DopaMenu isn't doing anything yet — Screen Time access wasn't granted, and no apps have been picked. Tap below to go back to step 1.";
+  } else if (authStatus !== 'approved') {
+    body =
+      "Screen Time access wasn't granted, so the Shield can't run. Tap below to go back to step 1 and allow it.";
+  } else {
+    body =
+      "You haven't picked any apps yet, so the Shield has nothing to watch. Tap below to go back to step 1.";
+  }
+
+  return (
+    <View
+      style={[
+        styles.iosNote,
+        styles.iosNoteWarn,
+        { padding: scale(14), marginTop: scale(18) },
+      ]}
+    >
+      <Ionicons name="alert-circle" size={scale(20)} color="#A05A2A" />
+      <View style={{ flex: 1 }}>
+        <Text style={[styles.iosNoteText, { fontSize: ms(12), color: '#5A3818', marginBottom: scale(8) }]}>
+          {body}
+        </Text>
+        <Pressable
+          onPress={() => router.replace('/onboarding/pick-problem-apps')}
+          style={[styles.iosNoteAction, { paddingVertical: scale(8), paddingHorizontal: scale(12) }]}
+        >
+          <Text style={[styles.iosNoteActionText, { fontSize: ms(13) }]}>Go back to step 1</Text>
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
@@ -965,6 +1089,24 @@ const styles = StyleSheet.create({
     backgroundColor: '#F2EEF7',
     borderRadius: 12,
   },
+  iosNoteOk: {
+    backgroundColor: '#E8F4EA',
+    borderWidth: 1,
+    borderColor: '#B7DFC0',
+  },
+  iosNoteWarn: {
+    backgroundColor: '#FBF1E5',
+    borderWidth: 1,
+    borderColor: '#E8C9A0',
+  },
+  iosNoteAction: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#E8C9A0',
+  },
+  iosNoteActionText: { color: '#A05A2A', fontWeight: '700' },
   iosNoteText: { flex: 1, color: '#6D6378', lineHeight: 18 },
   footer: { borderTopWidth: 1, borderTopColor: '#EAE2F1' },
   footerHint: {
