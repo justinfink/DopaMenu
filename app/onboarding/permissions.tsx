@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  Alert,
   AppState,
   AppStateStatus,
   Platform,
@@ -215,6 +216,12 @@ export default function PermissionsScreen() {
 
   // Permission state
   const [notificationsGranted, setNotificationsGranted] = useState(false);
+  // Tracks "user explicitly chose to skip notifications" — distinct from
+  // "OS denied." We treat skipped as completed for traversal so the user
+  // can move past the step without it staying highlighted forever.
+  // Granted state still reflects the real OS value, so the home-screen
+  // banner correctly surfaces when actually denied.
+  const [notificationsSkipped, setNotificationsSkipped] = useState(false);
   const [usageGranted, setUsageGranted] = useState(false);
   const [accessibilityGranted, setAccessibilityGranted] = useState(false);
   // Set on the first refresh — if either real permission was already
@@ -279,7 +286,7 @@ export default function PermissionsScreen() {
   // (which means the gate was passed somehow).
   const gatePassed = accessibilityGranted || usageGranted;
   const grantedMap: Record<StepId, boolean> = {
-    notifications: notificationsGranted,
+    notifications: notificationsGranted || notificationsSkipped,
     trigger_restricted: triggerVisited || gatePassed,
     unlock_restricted: unlockVisited || gatePassed,
     accessibility: accessibilityGranted,
@@ -372,15 +379,31 @@ export default function PermissionsScreen() {
       lastLaunchedRef.current = id;
 
       if (id === 'notifications') {
+        let granted = false;
         try {
           const res = await Notifications.requestPermissionsAsync();
-          setNotificationsGranted(res.status === 'granted');
+          granted = res.status === 'granted';
         } catch (e) {
           console.warn('requestPermissionsAsync failed:', e);
-          setBanner("Couldn't open notifications prompt. Tap to retry.");
+          setBanner("Couldn't open the notifications prompt. Tap to retry.");
           return;
         }
-        // Advance on the next tick so state has committed.
+        // On iOS the only step IS notifications, and iOS won't re-prompt
+        // after a deny. If we treated denial as "step incomplete," the user
+        // would be permanently stuck on this screen with no path forward.
+        // Treat any answered response as done — and tell the user gently
+        // how to flip notifications back on later. On Android, denial is
+        // still blocking (we need it for nudges, and Android lets us
+        // re-prompt).
+        if (!granted && Platform.OS === 'ios') {
+          setNotificationsGranted(true);
+          Alert.alert(
+            'Got it — no notifications',
+            "DopaMenu still works without them. If you change your mind, open Settings → DopaMenu → Notifications and switch them on.",
+          );
+        } else {
+          setNotificationsGranted(granted);
+        }
         setTimeout(() => {
           advanceAfterRecheck().catch((e) =>
             console.warn('advanceAfterRecheck (post-notif) failed:', e),
@@ -457,7 +480,7 @@ export default function PermissionsScreen() {
 
       const gatePassedNow = a || u;
       const latest: Record<StepId, boolean> = {
-        notifications: n,
+        notifications: n || notificationsSkipped,
         trigger_restricted: triggerNow || gatePassedNow,
         unlock_restricted: unlockNow || gatePassedNow,
         usage_access: u,
@@ -542,7 +565,7 @@ export default function PermissionsScreen() {
 
     const gatePassedNow = a || u;
     const latest: Record<StepId, boolean> = {
-      notifications: n,
+      notifications: n || notificationsSkipped,
       trigger_restricted: triggerVisited || gatePassedNow,
       unlock_restricted: unlockVisited || gatePassedNow,
       usage_access: u,
@@ -667,13 +690,22 @@ export default function PermissionsScreen() {
     await recheckOnly();
   };
 
-  // "Skip — I'll decide later" for the notifications step. The user can
-  // proceed without ever seeing the OS prompt; we still register them as
-  // having declined for now so the home-screen banner can offer to
-  // re-enable later. Granted state stays whatever the OS already says.
+  // "Skip — I'll decide later" for the notifications step. Without flipping
+  // notificationsSkipped, advanceAfterRecheck would loop on notifications
+  // (since the OS state is still un-granted, it'd keep finding it as the
+  // first incomplete step). The skipped flag lets us treat this step as
+  // soft-completed for traversal while leaving the real OS state alone —
+  // the home-screen banner reads OS state, so it'll still surface if the
+  // user actually denied. Granted state stays whatever the OS already says.
   const handleSkipNotifications = async () => {
     setBanner(null);
-    await advanceAfterRecheck();
+    setNotificationsSkipped(true);
+    // Defer advance so the state update commits before traversal recomputes.
+    setTimeout(() => {
+      advanceAfterRecheck().catch((e) =>
+        console.warn('advanceAfterRecheck (post-skip) failed:', e),
+      );
+    }, 50);
   };
 
   // Explicit "decline" path for Accessibility. Google's prominent disclosure

@@ -1231,6 +1231,16 @@ import android.view.accessibility.AccessibilityEvent
 // and overlay-like instead of a notification the user has to tap.
 class DopaMenuAccessibilityService : AccessibilityService() {
 
+    // Last package we saw foreground (tracked or not). Used to filter out
+    // internal-nav WINDOW_STATE_CHANGED events: every story / reel / feed
+    // transition inside Instagram fires this event, but we only want to
+    // intervene when the user actually TRANSITIONED INTO Instagram from
+    // elsewhere — not while they're navigating within it. Without this,
+    // any Instagram session longer than the 5s suppression window will
+    // re-fire intervention on the next internal nav. Mirrors what the FGS
+    // poller does with lastForegroundApp.
+    private var lastSeenPackage: String? = null
+
     override fun onServiceConnected() {
         // Do NOT set serviceInfo programmatically here. Assigning a fresh
         // AccessibilityServiceInfo() replaces the XML config wholesale,
@@ -1251,8 +1261,23 @@ class DopaMenuAccessibilityService : AccessibilityService() {
             if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
             val pkg = event.packageName?.toString() ?: return
 
+            // Track every foreground package (tracked or not), so we can
+            // detect true transitions INTO a tracked app. Update unconditionally
+            // before the filter below — if we only updated for tracked apps,
+            // we'd miss the "user left Instagram → opened Twitter → came back
+            // to Instagram" sequence as a real re-launch.
+            val previousPackage = lastSeenPackage
+            lastSeenPackage = pkg
+
             // Only intercept apps the user is tracking
             if (!DopaMenuAppUsageModule.monitoringPackages.contains(pkg)) return
+
+            // Skip internal-nav events. WINDOW_STATE_CHANGED fires for every
+            // activity transition — Instagram story → feed, TikTok For You →
+            // Following — all have pkg == previousPackage. We only want to
+            // intervene when the user actually transitioned INTO this tracked
+            // app from somewhere else.
+            if (pkg == previousPackage) return
 
             // Cross-path gate. shouldDispatchIntervention combines the
             // user-explicit suppression window AND a 1.5s cross-path debounce
