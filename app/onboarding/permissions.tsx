@@ -971,9 +971,16 @@ function IosShieldStatusCard({ scale, ms }: { scale: (n: number) => number; ms: 
   const [authStatus, setAuthStatus] = useState<'approved' | 'denied' | 'notDetermined' | 'unknown'>('unknown');
   const [hasSelection, setHasSelection] = useState(false);
 
+  // iOS 15 doesn't have ManagedSettings.shield at all, so we never even
+  // probe Family Controls auth on it — instead we point users at tap-free
+  // mode (Shortcuts) which IS available on iOS 15.
+  const iosVersionNum = parseInt(String(Platform.Version), 10);
+  const hasShield = iosVersionNum >= 16;
+
   // Re-check every time we come back to this screen (user might have just
   // returned from setting things up).
   useEffect(() => {
+    if (!hasShield) return;
     const check = () => {
       const status = getIosFamilyControlsStatus();
       const sel = hasProblemAppSelection();
@@ -986,7 +993,31 @@ function IosShieldStatusCard({ scale, ms }: { scale: (n: number) => number; ms: 
       if (s === 'active') check();
     });
     return () => sub.remove();
-  }, []);
+  }, [hasShield]);
+
+  // iOS 15 path: we never call this iOS 15 user "set up" because the only
+  // protection mechanism that works for them is tap-free mode (Shortcuts),
+  // and Shortcuts setup happens after onboarding from Settings. Here we
+  // just tell them what to expect next instead of dead-ending them on a
+  // "Shield isn't set up" warning that they can't fix.
+  if (!hasShield) {
+    return (
+      <View
+        style={[
+          styles.iosNote,
+          { padding: scale(14), marginTop: scale(18) },
+        ]}
+      >
+        <Ionicons name="information-circle" size={scale(18)} color="#7A6F85" />
+        <Text style={[styles.iosNoteText, { fontSize: ms(12) }]}>
+          On iOS 15, the in-the-moment intervention runs through a Shortcuts
+          automation instead of Apple's newer Shield. Once you finish here,
+          jump to Settings → <Text style={{ fontWeight: '700' }}>Set up tap-free mode</Text>{' '}
+          for a 30-second guided setup.
+        </Text>
+      </View>
+    );
+  }
 
   if (shieldReady) {
     return (

@@ -12,6 +12,17 @@ import {
   startBlocking,
 } from '../../src/services/iosFamilyControls';
 
+// Apple's FamilyActivityPicker + ManagedSettings.shield only exist on iOS 16+.
+// On iOS 15.x we still let the user pick problem apps via our own AppPicker —
+// the selection feeds the redirect engine and gets shown as preview chips in
+// the tap-free walkthrough so the user knows which apps to multi-select in
+// Shortcuts.app's Personal Automation trigger. Without this iOS-version split,
+// iOS 15 users hit the Family Controls "needs iOS 16+" gate and can never
+// configure anything.
+const IOS_VERSION_NUM =
+  Platform.OS === 'ios' ? parseInt(String(Platform.Version), 10) : 0;
+const USE_NATIVE_IOS_PICKER = Platform.OS === 'ios' && IOS_VERSION_NUM >= 16;
+
 export default function PickProblemApps() {
   const r = useResponsive();
   const user = useUserStore((s) => s.user);
@@ -34,20 +45,21 @@ export default function PickProblemApps() {
   );
   const [selected, setSelected] = useState<string[]>(initial);
   const [iosSelectionCount, setIosSelectionCount] = useState(
-    Platform.OS === 'ios' && hasProblemAppSelection() ? 1 : 0,
+    USE_NATIVE_IOS_PICKER && hasProblemAppSelection() ? 1 : 0,
   );
 
-  // True if the user has actually picked something to track. We use this to
-  // (a) decide what the bottom button says and (b) warn before letting them
-  // skip the whole step.
+  // Continue is only "real" if the user actually picked something. iOS 16+
+  // uses the native picker (selection lives in App Group), iOS 15 + Android
+  // use our React Native picker (selection is the `selected` array).
   const canContinue =
-    Platform.OS === 'ios' ? iosSelectionCount > 0 : selected.length > 0;
+    USE_NATIVE_IOS_PICKER ? iosSelectionCount > 0 : selected.length > 0;
 
   const persistAndAdvance = async () => {
-    if (Platform.OS === 'ios') {
-      // iOS: tokens are opaque, we don't keep our own list. Apple's picker
-      // already wrote the selection to App Group storage. Flip blocking on
-      // now so the Shield is armed before they leave this screen.
+    if (USE_NATIVE_IOS_PICKER) {
+      // iOS 16+: tokens are opaque, we don't keep our own list. Apple's
+      // picker already wrote the selection to App Group storage. Flip
+      // blocking on now so the Shield is armed before they leave this
+      // screen.
       if (hasProblemAppSelection()) {
         try {
           await startBlocking();
@@ -59,6 +71,9 @@ export default function PickProblemApps() {
       return;
     }
 
+    // iOS 15 OR Android: persist the React Native picker selection. On iOS
+    // 15 this list also drives the tap-free walkthrough's "look for these
+    // in Shortcuts.app" preview chips, since there's no Shield to arm.
     const trackedApps = selected
       .map((id) => APP_CATALOG.find((a) => a.id === id))
       .filter((a): a is NonNullable<typeof a> => !!a)
@@ -79,14 +94,18 @@ export default function PickProblemApps() {
       await persistAndAdvance();
       return;
     }
-    // No selection — make sure the user knows what skipping means before we
-    // let them through. On iOS especially, skipping leaves them with zero
-    // app blocking; better to warn than ship a "feature" that isn't there.
+    // Skip-without-setup confirmation. The copy adapts to platform/iOS
+    // version so users know exactly what they're giving up.
+    const skipMessage =
+      USE_NATIVE_IOS_PICKER
+        ? "Without picking apps here, DopaMenu can't step in when you open Instagram, TikTok, or anything else. You can come back any time from Settings, but the rest of the app won't have much to do until you do."
+        : Platform.OS === 'ios'
+        ? "Without picking apps here, the tap-free shortcut won't know what to gentle. You can come back any time from Settings."
+        : "DopaMenu won't have any apps to gently interrupt. You can come back any time from Settings.";
+
     Alert.alert(
       'Skip this step?',
-      Platform.OS === 'ios'
-        ? "Without picking apps here, DopaMenu can't step in when you open Instagram, TikTok, or anything else. You can come back any time from Settings, but the rest of the app won't have much to do until you do."
-        : "DopaMenu won't have any apps to gently interrupt. You can come back any time from Settings.",
+      skipMessage,
       [
         { text: 'Go back', style: 'cancel' },
         {
@@ -104,7 +123,7 @@ export default function PickProblemApps() {
     <SafeAreaView style={styles.container}>
       <View style={[styles.content, { paddingHorizontal: r.scale(20), paddingTop: r.vscale(16) }]}>
         <Text style={[styles.step, { fontSize: r.ms(11) }]}>STEP 1 OF 3</Text>
-        {Platform.OS === 'ios' ? (
+        {USE_NATIVE_IOS_PICKER ? (
           <IosFamilyControlsPicker onSelectionChange={setIosSelectionCount} />
         ) : (
           <AppPicker
@@ -113,7 +132,11 @@ export default function PickProblemApps() {
             onChange={setSelected}
             preselectInstalledPopular
             title="Which apps pull you in?"
-            subtitle="Pick the ones you want a gentler relationship with. We've already checked off the four most people choose, if they're on your phone — adjust to taste."
+            subtitle={
+              Platform.OS === 'ios'
+                ? "Pick the ones you'd like a gentler relationship with. We've already checked off the four most people choose, if they're on your phone — adjust to taste. (On iOS 15 we'll wire these into a Shortcut at the end.)"
+                : "Pick the ones you want a gentler relationship with. We've already checked off the four most people choose, if they're on your phone — adjust to taste."
+            }
           />
         )}
       </View>

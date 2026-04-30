@@ -958,6 +958,16 @@ function SettingsSection({
  * of the day, lets them resume early, and links to the picker if they
  * want to change which apps are blocked.
  */
+// Apple's Family Controls Shield + ManagedSettings only exist on iOS 16+. On
+// iOS 15.x users, the Shield concept is meaningless — we hide every Shield
+// affordance and surface tap-free mode (Shortcuts-based) as the primary
+// path. Without this fork, an iOS 15 user sees a permanent amber "Shield
+// isn't set up" card with no escape, since Shield literally cannot be
+// armed on their iOS version.
+const IOS_VERSION_NUM_SETTINGS =
+  Platform.OS === 'ios' ? parseInt(String(Platform.Version), 10) : 0;
+const IOS_HAS_SHIELD = Platform.OS === 'ios' && IOS_VERSION_NUM_SETTINGS >= 16;
+
 function IosShieldCard() {
   const user = useUserStore((s) => s.user);
   const [authStatus, setAuthStatus] = useState(getIosFamilyControlsStatus());
@@ -1029,6 +1039,73 @@ function IosShieldCard() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.push('/onboarding/pick-problem-apps');
   };
+
+  const goSetupAutomationStandalone = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push('/onboarding/setup-automation' as never);
+  };
+
+  // iOS 15 path: no Shield, no pause/resume, no "edit blocked apps." Tap-free
+  // mode is the only thing that exists, so we surface it as the primary
+  // affordance. Configured = green confirmation; not configured = primary
+  // CTA. Editing the tracked-app list still routes back to step 1 of
+  // onboarding (which on iOS 15 renders our React Native AppPicker).
+  if (!IOS_HAS_SHIELD) {
+    const tapFreeOn = !!user?.preferences.iosAutomationConfigured;
+    if (tapFreeOn) {
+      return (
+        <Card style={[styles.infoCard, { borderWidth: 1, borderColor: '#B7DFC0', backgroundColor: '#E8F4EA' }]}>
+          <View style={styles.infoContent}>
+            <Ionicons name="flash" size={20} color="#3B7A4B" />
+            <View style={styles.infoText}>
+              <Text style={[styles.infoTitle, { color: '#2E5535' }]}>Tap-free mode is on</Text>
+              <Text style={[styles.infoDescription, { color: '#2E5535' }]}>
+                When you reach for one of the apps you picked, DopaMenu opens
+                first via your Shortcuts automation.
+              </Text>
+            </View>
+          </View>
+          <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md, flexWrap: 'wrap' }}>
+            <TouchableOpacity onPress={editSelection} style={[styles.pauseChip]}>
+              <Ionicons name="create" size={14} color="#5A3818" />
+              <Text style={styles.pauseChipText}>Change apps</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={goSetupAutomationStandalone} style={[styles.pauseChip]}>
+              <Ionicons name="refresh" size={14} color="#5A3818" />
+              <Text style={styles.pauseChipText}>Re-run setup</Text>
+            </TouchableOpacity>
+          </View>
+        </Card>
+      );
+    }
+    return (
+      <Card style={[styles.infoCard, { borderWidth: 1, borderColor: '#E2D7EC', backgroundColor: '#FFFFFF' }]}>
+        <View style={styles.infoContent}>
+          <Ionicons name="flash-outline" size={20} color="#7A5BA0" />
+          <View style={styles.infoText}>
+            <Text style={[styles.infoTitle, { color: '#2E2639' }]}>Tap-free mode</Text>
+            <Text style={[styles.infoDescription, { color: '#6D6378' }]}>
+              On iOS 15 we use Shortcuts to open DopaMenu the moment you reach
+              for a tracked app. ~30 seconds, one-time setup.
+            </Text>
+          </View>
+        </View>
+        <TouchableOpacity
+          onPress={goSetupAutomationStandalone}
+          style={[styles.tapFreeCta, { marginTop: spacing.md }]}
+        >
+          <Ionicons name="flash" size={18} color="#FFFFFF" />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.tapFreeCtaTitle}>Set up tap-free mode</Text>
+            <Text style={styles.tapFreeCtaSubtitle}>
+              Walk through Shortcuts in 30 seconds. We'll guide you tap by tap.
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
+        </TouchableOpacity>
+      </Card>
+    );
+  }
 
   if (broken) {
     return (
