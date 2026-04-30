@@ -191,7 +191,7 @@ async function exitDopaMenu(triggerPackage: string | null, triggerLabel: string 
 }
 
 export default function InterventionScreen() {
-  const { activeIntervention, activeTriggerPackage, recordOutcome, clearActiveIntervention } =
+  const { activeIntervention, activeTriggerPackage, activeTriggerLabel, recordOutcome, clearActiveIntervention } =
     useInterventionStore();
   const { user } = useUserStore();
 
@@ -240,17 +240,36 @@ export default function InterventionScreen() {
     };
   }, []);
 
-  // closeAndExit: animate out, clear store, then either (a) leave the user on
-  // the launched intervention app, or (b) actively exit DopaMenu so Android
-  // surfaces the previous app or home screen. Never leave the user stranded
-  // on a back-stack-empty white screen, which was the custom-tracked-app bug.
-  const closeAndExit = (launched: boolean) => {
+  // closeAndExit: animate out, clear store, then route the user somewhere
+  // sensible based on what they just did:
+  //   • launched=true                   → an external app already foregrounded;
+  //                                       OS already moved them; we just clean up.
+  //   • returnToTriggerApp=true         → user explicitly chose to keep going
+  //                                       to the trigger app (Continue button).
+  //                                       On iOS we openURL(scheme) after
+  //                                       suppression. On Android we open the
+  //                                       package via intent.
+  //   • else (Dismiss / Accept-no-launch) → user aborted or chose an off-phone
+  //                                       activity. Don't auto-launch ANYTHING.
+  //                                       Just close the modal and leave them
+  //                                       on tabs (iOS) or exit so OS surfaces
+  //                                       the previous task (Android). We
+  //                                       deliberately do NOT openURL the
+  //                                       trigger app here — doing so would
+  //                                       contradict the user's choice and on
+  //                                       iOS would also re-trigger the Shield
+  //                                       in a loop because no suppression
+  //                                       was applied.
+  const closeAndExit = (
+    launched: boolean,
+    options: { returnToTriggerApp?: boolean } = {},
+  ) => {
+    const { returnToTriggerApp = false } = options;
     const triggerPackage = activeTriggerPackage;
-    // Look up label so iOS exitDopaMenu can find the right scheme.
     const trackedHit = user?.preferences.trackedApps.find(
       (a) => a.packageName === triggerPackage,
     );
-    const triggerLabel = trackedHit?.label ?? null;
+    const triggerLabel = activeTriggerLabel ?? trackedHit?.label ?? null;
 
     if (Platform.OS === 'android' && triggerPackage) {
       appUsageService.suppressIntercept(triggerPackage, SUPPRESSION_WINDOW_MS);
@@ -269,7 +288,20 @@ export default function InterventionScreen() {
     ]).start(() => {
       clearActiveIntervention();
       if (launched) return;
-      exitDopaMenu(triggerPackage, triggerLabel);
+      if (returnToTriggerApp) {
+        exitDopaMenu(triggerPackage, triggerLabel);
+        return;
+      }
+      // Dismiss / off-phone accept — leave the user on a sane screen.
+      // Android: pop our activity so the OS shows the previous task.
+      // iOS: we can't programmatically leave the app, so route to tabs.
+      if (Platform.OS === 'android') {
+        BackHandler.exitApp();
+      } else if (router.canGoBack()) {
+        router.back();
+      } else {
+        router.replace('/(tabs)');
+      }
     });
   };
 
@@ -286,12 +318,15 @@ export default function InterventionScreen() {
     recordOutcome('accepted');
     const chosen = intervention ?? displayIntervention;
     const launched = await launchIntervention(chosen);
+    // Accept never returns to the trigger app — the user chose an alternative.
     closeAndExit(launched);
   };
 
   const handleDismiss = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     recordOutcome('dismissed');
+    // Dismiss = "I aborted, leave me alone." Don't auto-open the trigger app —
+    // on iOS that would just re-trigger the Shield since no suppression ran.
     closeAndExit(false);
   };
 
@@ -317,7 +352,9 @@ export default function InterventionScreen() {
         return;
       }
     }
-    closeAndExit(false);
+    // Continue is the one path that explicitly hands the user back to the app
+    // they were trying to open in the first place.
+    closeAndExit(false, { returnToTriggerApp: true });
   };
 
   const handleSelectAlternative = (intervention: InterventionCandidate) => {

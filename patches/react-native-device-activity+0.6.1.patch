@@ -1,0 +1,21 @@
+diff --git a/node_modules/react-native-device-activity/ios/Shared.swift b/node_modules/react-native-device-activity/ios/Shared.swift
+index 4839430..42a6337 100644
+--- a/node_modules/react-native-device-activity/ios/Shared.swift
++++ b/node_modules/react-native-device-activity/ios/Shared.swift
+@@ -226,6 +226,16 @@ func executeGenericAction(
+     // todo: replace with general string
+     openUrl(urlString: "device-activity://")
+ 
++    sleep(ms: 1000)
++  } else if type == "openUrl" {
++    // Patched in by DopaMenu (see patches/react-native-device-activity+*.patch).
++    // Without this branch, action lists with type:"openUrl" silently no-op
++    // when iterated through executeGenericAction — that was the "Shield's
++    // Take a pause closes but nothing happens" bug.
++    if let urlString = action["url"] as? String {
++      openUrl(urlString: urlString)
++    }
++
+     sleep(ms: 1000)
+   } else if type == "enableBlockAllMode" {
+     updateShield(

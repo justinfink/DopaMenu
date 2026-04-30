@@ -22,6 +22,12 @@ interface InterventionState {
   // fallback so we can launch back into the original app even when it isn't
   // in the hard-coded catalog (custom tracked apps).
   activeTriggerPackage: string | null;
+  // User-facing label of the trigger app, when we have it. On iOS the Shield
+  // hands us a display name like "Instagram" but no bundle id, and our
+  // React-side trackedApps list is empty (selection lives in App Group as
+  // opaque tokens). Carrying the label separately means exitDopaMenu can
+  // still find the right URL scheme to send the user back into.
+  activeTriggerLabel: string | null;
 
   // History for learning
   recentOutcomes: Outcome[];
@@ -38,7 +44,12 @@ interface InterventionState {
   continuedCount: number;
 
   // Actions
-  showIntervention: (decision: InterventionDecision, situation: Situation, triggerPackage?: string) => void;
+  showIntervention: (
+    decision: InterventionDecision,
+    situation: Situation,
+    triggerPackage?: string,
+    triggerLabel?: string,
+  ) => void;
   recordOutcome: (action: OutcomeAction, followThrough?: boolean) => void;
   dismissIntervention: () => void;
   clearActiveIntervention: () => void;
@@ -57,6 +68,7 @@ export const useInterventionStore = create<InterventionState>()(
       activeIntervention: null,
       activeSituation: null,
       activeTriggerPackage: null,
+      activeTriggerLabel: null,
       recentOutcomes: [],
       interventionHistory: [],
       lastInterventionTime: null,
@@ -66,11 +78,12 @@ export const useInterventionStore = create<InterventionState>()(
       dismissedCount: 0,
       continuedCount: 0,
 
-      showIntervention: (decision, situation, triggerPackage) => {
+      showIntervention: (decision, situation, triggerPackage, triggerLabel) => {
         set((state) => ({
           activeIntervention: decision,
           activeSituation: situation,
           activeTriggerPackage: triggerPackage ?? null,
+          activeTriggerLabel: triggerLabel ?? null,
           interventionHistory: [
             decision,
             ...state.interventionHistory.slice(0, MAX_HISTORY - 1),
@@ -99,6 +112,7 @@ export const useInterventionStore = create<InterventionState>()(
           activeIntervention: null,
           activeSituation: null,
           activeTriggerPackage: null,
+          activeTriggerLabel: null,
           acceptedCount:
             action === 'accepted'
               ? state.acceptedCount + 1
@@ -126,6 +140,7 @@ export const useInterventionStore = create<InterventionState>()(
           activeIntervention: null,
           activeSituation: null,
           activeTriggerPackage: null,
+          activeTriggerLabel: null,
         });
       },
 
@@ -152,6 +167,7 @@ export const useInterventionStore = create<InterventionState>()(
           activeIntervention: null,
           activeSituation: null,
           activeTriggerPackage: null,
+          activeTriggerLabel: null,
           recentOutcomes: [],
           interventionHistory: [],
           lastInterventionTime: null,

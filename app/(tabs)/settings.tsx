@@ -22,6 +22,15 @@ import { usePortfolioStore } from '../../src/stores/portfolioStore';
 import { useCustomInterventionsStore } from '../../src/stores/customInterventionsStore';
 import { DEFAULT_IDENTITY_ANCHORS } from '../../src/models';
 import { analyticsService, AnalyticsEvents, notificationService, appUsageService } from '../../src/services';
+import {
+  hasProblemAppSelection,
+  getAuthorizationStatus as getIosFamilyControlsStatus,
+  pauseBlockingFor,
+  resumeBlocking,
+  isPaused as iosIsPaused,
+  pausedUntil as iosPausedUntil,
+  startBlocking as startIosBlocking,
+} from '../../src/services/iosFamilyControls';
 import { colors, spacing, borderRadius, typography } from '../../src/constants/theme';
 
 // ============================================
@@ -833,43 +842,8 @@ export default function SettingsScreen() {
           </SettingsSection>
         )}
 
-        {/* iOS App Redirect (Shortcuts-based) */}
-        {Platform.OS === 'ios' && (
-          <TouchableOpacity
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              router.push('/ios-setup');
-            }}
-          >
-            <Card style={styles.infoCard}>
-              <View style={styles.infoContent}>
-                <View style={styles.toggleIcon}>
-                  <Ionicons name="swap-horizontal" size={20} color={colors.primary} />
-                </View>
-                <View style={styles.infoText}>
-                  <Text style={styles.infoTitle}>iOS App Redirect</Text>
-                  <Text style={styles.infoDescription}>
-                    {(() => {
-                      const configured = user.preferences.trackedApps.filter(
-                        (a) => a.iosShortcutConfigured
-                      ).length;
-                      const total = user.preferences.trackedApps.length;
-                      if (configured === 0) {
-                        return `Set up Shortcuts to redirect Instagram, TikTok, and more to DopaMenu`;
-                      }
-                      return `${configured} of ${total} apps redirecting to DopaMenu`;
-                    })()}
-                  </Text>
-                </View>
-                <Ionicons
-                  name="chevron-forward"
-                  size={20}
-                  color={colors.textTertiary}
-                />
-              </View>
-            </Card>
-          </TouchableOpacity>
-        )}
+        {/* iOS Shield status + pause controls */}
+        {Platform.OS === 'ios' && <IosShieldCard />}
 
         {/* Quiet Hours Info */}
         <Card style={styles.infoCard}>
@@ -978,7 +952,226 @@ function SettingsSection({
   );
 }
 
+/**
+ * iOS-only settings card. Tells the user, in plain English, whether the
+ * Shield is on or paused, lets them pause it for an hour or for the rest
+ * of the day, lets them resume early, and links to the picker if they
+ * want to change which apps are blocked.
+ */
+function IosShieldCard() {
+  const user = useUserStore((s) => s.user);
+  const [authStatus, setAuthStatus] = useState(getIosFamilyControlsStatus());
+  const [hasSelection, setHasSelection] = useState(hasProblemAppSelection());
+  const [paused, setPaused] = useState(iosIsPaused());
+  const [pausedTo, setPausedTo] = useState(iosPausedUntil());
+
+  // Re-poll when the screen comes back into focus so a pause that ran out
+  // while the app was backgrounded shows up correctly.
+  useEffect(() => {
+    const refresh = () => {
+      setAuthStatus(getIosFamilyControlsStatus());
+      setHasSelection(hasProblemAppSelection());
+      setPaused(iosIsPaused());
+      setPausedTo(iosPausedUntil());
+    };
+    refresh();
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') refresh();
+    });
+    // Also tick once a minute so the "paused until X" countdown updates.
+    const t = setInterval(refresh, 60_000);
+    return () => {
+      sub.remove();
+      clearInterval(t);
+    };
+  }, []);
+
+  const armed = authStatus === 'approved' && hasSelection && !paused;
+  const broken = authStatus !== 'approved' || !hasSelection;
+
+  const formatTime = (ms: number) => {
+    const d = new Date(ms);
+    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  };
+
+  const doPause = async (durationMs: number, label: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    try {
+      await pauseBlockingFor(durationMs);
+      setPaused(true);
+      setPausedTo(Date.now() + durationMs);
+    } catch (err: any) {
+      Alert.alert(
+        "Couldn't pause the Shield",
+        "Something went sideways with iPhone. " +
+          (err?.message ? `Details: ${err.message}` : 'Try again in a moment.'),
+      );
+    }
+  };
+
+  const doResume = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    try {
+      await resumeBlocking();
+      setPaused(false);
+      setPausedTo(0);
+    } catch (err: any) {
+      Alert.alert(
+        "Couldn't resume the Shield",
+        err?.message
+          ? `iPhone said: ${err.message}`
+          : 'Try opening the app again, or open Settings → Screen Time → DopaMenu and toggle it on.',
+      );
+    }
+  };
+
+  const editSelection = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push('/onboarding/pick-problem-apps');
+  };
+
+  if (broken) {
+    return (
+      <Card style={[styles.infoCard, { borderWidth: 1, borderColor: '#E8C9A0', backgroundColor: '#FBF1E5' }]}>
+        <View style={styles.infoContent}>
+          <Ionicons name="alert-circle" size={20} color="#A05A2A" />
+          <View style={styles.infoText}>
+            <Text style={[styles.infoTitle, { color: '#5A3818' }]}>Shield isn't set up</Text>
+            <Text style={[styles.infoDescription, { color: '#5A3818' }]}>
+              {authStatus !== 'approved'
+                ? "Screen Time access wasn't granted. Tap below to allow it and pick apps."
+                : "You haven't picked any apps to block yet. Tap below to choose them."}
+            </Text>
+          </View>
+        </View>
+        <TouchableOpacity onPress={editSelection} style={[styles.dangerButton, { borderColor: '#A05A2A', marginTop: spacing.sm }]}>
+          <Ionicons name="settings-outline" size={18} color="#A05A2A" />
+          <Text style={[styles.dangerButtonText, { color: '#A05A2A' }]}>Set up the Shield</Text>
+        </TouchableOpacity>
+      </Card>
+    );
+  }
+
+  if (paused) {
+    return (
+      <Card style={[styles.infoCard, { borderWidth: 1, borderColor: '#E8C9A0', backgroundColor: '#FBF1E5' }]}>
+        <View style={styles.infoContent}>
+          <Ionicons name="pause-circle" size={20} color="#A05A2A" />
+          <View style={styles.infoText}>
+            <Text style={[styles.infoTitle, { color: '#5A3818' }]}>Shield paused</Text>
+            <Text style={[styles.infoDescription, { color: '#5A3818' }]}>
+              {pausedTo > 0
+                ? `It'll come back on at ${formatTime(pausedTo)}. Until then, your apps open like normal.`
+                : "It'll come back on shortly."}
+            </Text>
+          </View>
+        </View>
+        <TouchableOpacity onPress={doResume} style={[styles.dangerButton, { borderColor: colors.primary, marginTop: spacing.sm }]}>
+          <Ionicons name="play" size={18} color={colors.primary} />
+          <Text style={[styles.dangerButtonText, { color: colors.primary }]}>Turn the Shield back on</Text>
+        </TouchableOpacity>
+      </Card>
+    );
+  }
+
+  const automationConfigured = !!user?.preferences.iosAutomationConfigured;
+  const goSetupAutomation = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    // Cast: the typed-routes generator hasn't seen the new file yet on first
+    // typecheck after adding it. The path is correct.
+    router.push('/onboarding/setup-automation' as never);
+  };
+
+  return (
+    <Card style={[styles.infoCard, { borderWidth: 1, borderColor: '#B7DFC0', backgroundColor: '#E8F4EA' }]}>
+      <View style={styles.infoContent}>
+        <Ionicons name="shield-checkmark" size={20} color="#3B7A4B" />
+        <View style={styles.infoText}>
+          <Text style={[styles.infoTitle, { color: '#2E5535' }]}>Shield is on</Text>
+          <Text style={[styles.infoDescription, { color: '#2E5535' }]}>
+            {automationConfigured
+              ? 'Tap-free mode is active — DopaMenu opens before your tracked apps do.'
+              : 'DopaMenu will gently step in when you open one of the apps you picked.'}
+          </Text>
+        </View>
+      </View>
+
+      <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md, flexWrap: 'wrap' }}>
+        <TouchableOpacity
+          onPress={() => doPause(60 * 60_000, '1 hour')}
+          style={[styles.pauseChip]}
+        >
+          <Ionicons name="pause" size={14} color="#5A3818" />
+          <Text style={styles.pauseChipText}>Pause 1 hr</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => doPause(8 * 60 * 60_000, '8 hours')}
+          style={[styles.pauseChip]}
+        >
+          <Ionicons name="pause" size={14} color="#5A3818" />
+          <Text style={styles.pauseChipText}>Pause 8 hrs</Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={editSelection} style={[styles.pauseChip]}>
+          <Ionicons name="create" size={14} color="#5A3818" />
+          <Text style={styles.pauseChipText}>Change apps</Text>
+        </TouchableOpacity>
+      </View>
+
+      {!automationConfigured ? (
+        <TouchableOpacity
+          onPress={goSetupAutomation}
+          style={[styles.tapFreeCta, { marginTop: spacing.md }]}
+        >
+          <Ionicons name="flash" size={18} color="#FFFFFF" />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.tapFreeCtaTitle}>Turn on tap-free mode</Text>
+            <Text style={styles.tapFreeCtaSubtitle}>
+              Skip the Shield. DopaMenu opens before the app does. ~30 seconds in Shortcuts.
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
+        </TouchableOpacity>
+      ) : null}
+    </Card>
+  );
+}
+
 const styles = StyleSheet.create({
+  tapFreeCta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#9B7BB8',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  tapFreeCtaTitle: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  tapFreeCtaSubtitle: {
+    color: '#F4EEFB',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  pauseChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#B7DFC0',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  pauseChipText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#2E5535',
+  },
   container: {
     flex: 1,
     backgroundColor: colors.background,

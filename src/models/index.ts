@@ -108,6 +108,12 @@ export interface UserPreferences {
   // Persisted onboarding state. Optional because older persisted users predate
   // the field — userStore's initializeUser backfills it.
   onboardingProgress?: OnboardingProgress;
+  // True once the iOS Personal Automation that runs our "Take a Pause"
+  // App Intent has fired at least once (auto-detected by app/_layout via
+  // the App Group `automationTriggeredAt` flag the Swift intent stamps).
+  // We use this to switch the Settings Tap-Free card from "set up" to
+  // "active" without nagging the user.
+  iosAutomationConfigured?: boolean;
 }
 
 export interface TimeRange {

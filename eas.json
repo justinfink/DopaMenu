@@ -22,7 +22,8 @@
     "preview-device": {
       "distribution": "internal",
       "ios": {
-        "simulator": false
+        "simulator": false,
+        "credentialsSource": "local"
       }
     },
     "production": {

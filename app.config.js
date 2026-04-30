@@ -91,6 +91,12 @@ export default {
       'expo-font',
       // Custom plugin for Android app usage detection
       './plugins/app-usage/withAppUsage',
+      // Drops DopaMenuAppIntents.swift into the iOS main app target so the
+      // "Take a Pause" App Shortcut shows up in Shortcuts.app — that's the
+      // tap-free mode setup path. Must run BEFORE react-native-device-activity
+      // so the Xcode project is in a stable state when the Apple-targets
+      // plugin scans it.
+      './plugins/app-intents/withDopaMenuAppIntents',
       // iOS Family Controls — Shield + ShieldAction + DeviceActivityMonitor extensions.
       // Must match IOS_APP_GROUP in src/constants/appGroup.ts.
       [

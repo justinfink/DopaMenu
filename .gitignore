@@ -40,6 +40,19 @@ null
 # by react-native-device-activity's withCopyTargetFolder plugin.
 targets/
 
+# Native iOS / Android folders are regenerated on every Expo prebuild.
+ios/
+android/
+
+# Build artifacts (.aab, .ipa, .apk) — never commit these.
+*.aab
+*.apk
+*.ipa
+
+# Dispatch / Claude worktree workspaces
+.claude/worktrees/
+.claude/state.json
+
 # Claude Code scheduled tasks lock
 .claude/scheduled_tasks.lock
 

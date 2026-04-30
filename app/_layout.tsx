@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
-import { Platform, Linking } from 'react-native';
+import { AppState, AppStateStatus, Platform, Linking } from 'react-native';
 import { Stack, router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
@@ -9,6 +9,7 @@ import { useInterventionStore } from '../src/stores/interventionStore';
 import { useCustomInterventionsStore } from '../src/stores/customInterventionsStore';
 import { notificationService, analyticsService, AnalyticsEvents, appUsageService } from '../src/services';
 import {
+  consumeAutomationHandoff,
   hasProblemAppSelection,
   getAuthorizationStatus as getFamilyControlsStatus,
   startBlocking as startIosBlocking,
@@ -110,6 +111,58 @@ export default function RootLayout() {
       ...useCustomInterventionsStore.getState().interventions,
     ];
 
+    // ─── iOS tap-free mode handoff ────────────────────────────────────────
+    // When the user has set up the Personal Automation that runs our
+    // "Take a Pause" App Intent, the Swift-side AppIntent stamps an App
+    // Group flag *milliseconds* before iOS foregrounds DopaMenu. We check
+    // that stamp on every foreground (and once at launch) and route into
+    // the intervention modal if it's fresh — that's what makes the
+    // Shortcuts handoff feel instant. consumeAutomationHandoff clears the
+    // stamp so the same handoff can't fire twice.
+    const handleAutomationHandoff = () => {
+      if (Platform.OS !== 'ios') return;
+      if (!currentUser.preferences.appMonitoringEnabled) return;
+      try {
+        if (!consumeAutomationHandoff()) return;
+      } catch {
+        return;
+      }
+      // Debounce: if a Shield-source intervention or another automation
+      // handoff just fired in the last 5s, don't double-fire.
+      if (!shouldShowIntervention()) return;
+      markInterventionShown();
+      analyticsService.track(AnalyticsEvents.INTERVENTION_SHOWN, {
+        trigger: 'ios_automation',
+      });
+      // Mark setup as complete the first time the automation actually fires.
+      // We never want to keep nagging the user about setup once it works.
+      if (!currentUser.preferences.iosAutomationConfigured) {
+        const { updatePreferences } = useUserStore.getState();
+        updatePreferences({ iosAutomationConfigured: true });
+      }
+      // The automation doesn't tell us *which* tracked app fired it (Apple
+      // doesn't pipe that through the AppIntent perform context yet), so
+      // we surface a generic intervention with no specific trigger label.
+      // The redirect engine still picks a personalized alternative.
+      const situation = simulateSituation();
+      const decision = generateIntervention(
+        situation,
+        currentUser,
+        buildCandidatePool(),
+      );
+      showIntervention(decision, situation, undefined, undefined);
+      router.push('/intervention');
+    };
+    // Run once at first launch in case the automation fired right before
+    // we mounted.
+    handleAutomationHandoff();
+    const automationHandoffSub = AppState.addEventListener(
+      'change',
+      (state: AppStateStatus) => {
+        if (state === 'active') handleAutomationHandoff();
+      },
+    );
+
     // Listen for app launch events via NativeEventEmitter — fires when DopaMenu is in the foreground
     if (Platform.OS === 'android' && currentUser.preferences.appMonitoringEnabled) {
       appLaunchUnsubscribe.current = appUsageService.onAppLaunched((event) => {
@@ -148,6 +201,7 @@ export default function RootLayout() {
     const handleDeepLink = ({ url }: { url: string }) => {
       if (url.startsWith('dopamenu://intervention')) {
         let triggerPackageName: string | undefined;
+        let triggerLabel: string | undefined;
         let source: string | undefined;
         let shieldToken: string | undefined;
         let shieldName: string | undefined;
@@ -182,6 +236,12 @@ export default function RootLayout() {
                 (a) => norm(a.label) === target
               );
               triggerPackageName = match?.packageName;
+              // Always carry the Shield's display name through. On iOS the
+              // React-side trackedApps array is empty (selection lives in
+              // App Group as opaque tokens), so without this label the
+              // intervention screen can't find the trigger app's URL scheme
+              // to send the user back into when they tap Continue.
+              triggerLabel = shieldName;
             }
           } else if (!triggerPackageName) {
             const iosBundleId = params.get('app') || undefined;
@@ -232,7 +292,7 @@ export default function RootLayout() {
           buildCandidatePool(),
           { triggerPackageName }
         );
-        showIntervention(decision, situation, triggerPackageName);
+        showIntervention(decision, situation, triggerPackageName, triggerLabel);
         router.push('/intervention');
       }
     };
@@ -255,14 +315,38 @@ export default function RootLayout() {
 
       // Handle different notification types
       if (data?.type === 'intervention' || data?.type === 'high_risk_reminder' || data?.type === 'immediate_checkin') {
-        // Generate an intervention and show it (no trigger app — generic check-in)
+        // Pull through any trigger context from the notification's userInfo —
+        // specifically the iOS Shield fallback path, where the ShieldAction
+        // extension sends a local notification when its openUrl trick can't
+        // open us directly. Carrying the trigger label means "Continue what
+        // I was doing" can still deep-link back into Instagram (or whatever).
+        let triggerLabel: string | undefined;
+        let triggerPackageName: string | undefined;
+        if (data?.source === 'shield_fallback' || data?.triggerLabel) {
+          if (typeof data.triggerLabel === 'string') {
+            triggerLabel = data.triggerLabel;
+            const norm = (s: string) =>
+              s.normalize('NFKD').replace(/\s+/g, '').toLowerCase();
+            const target = norm(triggerLabel);
+            const match = currentUser.preferences.trackedApps.find(
+              (a) => norm(a.label) === target
+            );
+            triggerPackageName = match?.packageName;
+            if (data.token && typeof data.token === 'string') {
+              recordShieldTrigger(data.token, triggerLabel);
+            }
+            if (!shouldShowIntervention()) return;
+            markInterventionShown();
+          }
+        }
         const situation = simulateSituation();
         const decision = generateIntervention(
           situation,
           currentUser,
-          buildCandidatePool()
+          buildCandidatePool(),
+          { triggerPackageName }
         );
-        showIntervention(decision, situation);
+        showIntervention(decision, situation, triggerPackageName, triggerLabel);
         router.push('/intervention');
       }
     });
@@ -274,6 +358,7 @@ export default function RootLayout() {
     });
 
     return () => {
+      automationHandoffSub.remove();
       deepLinkSub.remove();
       if (appLaunchUnsubscribe.current) {
         appLaunchUnsubscribe.current();
@@ -329,6 +414,10 @@ export default function RootLayout() {
           }}
         />
         <Stack.Screen name="ios-setup" options={{ headerShown: false }} />
+        <Stack.Screen
+          name="onboarding/setup-automation"
+          options={{ headerShown: false, presentation: 'card' }}
+        />
       </Stack>
     </>
   );

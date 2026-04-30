@@ -1,22 +1,14 @@
 /**
  * AppPicker — universal app-selection UI used in onboarding and settings.
  *
- * Shows a searchable, category-grouped list of apps from the catalog. On
- * mount it probes which apps are installed on the device (iOS canOpenURL,
- * Android PackageManager) and surfaces those first with an "Installed" pill.
- *
- * Callers pass:
- *   - role: 'problem' | 'redirect' — filters the catalog
- *   - selectedIds: currently selected catalog ids
- *   - onChange: called with the new selection set
- *   - title / subtitle: header copy
- *
- * Design notes (responsive):
- *   - uses useResponsive() so it renders cleanly on iPhone SE (375x667)
- *   - card rows collapse padding and type on small devices
- *   - installed-indicator adapts to row width
+ * Probes installed apps (iOS canOpenURL, Android PackageManager), surfaces the
+ * ones the user actually has on top, and on first-render auto-checks the apps
+ * we mark `popular` (Instagram, TikTok, YouTube, Reddit) when they're
+ * installed — so the user opens the screen and the right answer is already
+ * there waiting for them. Apps the user doesn't have show a tap-to-install
+ * button that jumps straight to the App Store / Play Store.
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -26,9 +18,14 @@ import {
   ActivityIndicator,
   StyleSheet,
   Platform,
+  Linking,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { APP_CATALOG, AppCatalogEntry, getAppsByRole } from '@/constants/appCatalog';
+import {
+  AppCatalogEntry,
+  getAppsByRole,
+  getStoreUrl,
+} from '@/constants/appCatalog';
 import { installedAppsService } from '@/services/installedApps';
 import { useResponsive } from '@/utils/responsive';
 
@@ -40,6 +37,12 @@ interface Props {
   subtitle?: string;
   /** Hide apps that aren't installed on device (default: false) */
   installedOnly?: boolean;
+  /**
+   * If true, when this component mounts and the user has nothing selected,
+   * we'll auto-check every popular app that's actually installed on the
+   * device. Set to true on first-time onboarding, false when re-editing.
+   */
+  preselectInstalledPopular?: boolean;
 }
 
 export default function AppPicker({
@@ -49,11 +52,13 @@ export default function AppPicker({
   title,
   subtitle,
   installedOnly = false,
+  preselectInstalledPopular = false,
 }: Props) {
   const r = useResponsive();
   const [query, setQuery] = useState('');
   const [installed, setInstalled] = useState<Record<string, boolean>>({});
   const [probing, setProbing] = useState(true);
+  const preselectAppliedRef = useRef(false);
 
   const pool = useMemo(() => getAppsByRole(role), [role]);
 
@@ -61,15 +66,32 @@ export default function AppPicker({
     let cancelled = false;
     (async () => {
       const result = await installedAppsService.probe(pool);
-      if (!cancelled) {
-        setInstalled(result);
-        setProbing(false);
+      if (cancelled) return;
+      setInstalled(result);
+      setProbing(false);
+
+      // First-run preselect: if caller asked for it AND the user has nothing
+      // checked, auto-check every popular app we detected on the device.
+      // We never override an existing selection — just seed the empty state.
+      if (
+        preselectInstalledPopular &&
+        !preselectAppliedRef.current &&
+        selectedIds.length === 0
+      ) {
+        const seed = pool
+          .filter((a) => a.popular && result[a.id])
+          .map((a) => a.id);
+        if (seed.length > 0) {
+          preselectAppliedRef.current = true;
+          onChange(seed);
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [pool]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pool, preselectInstalledPopular]);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -105,9 +127,22 @@ export default function AppPicker({
     }
   };
 
+  const openStore = async (app: AppCatalogEntry) => {
+    const url = getStoreUrl(app, Platform.OS === 'ios' ? 'ios' : 'android');
+    if (!url) return;
+    try {
+      await Linking.openURL(url);
+    } catch {
+      // Fall through silently — the user can search for the app themselves.
+    }
+  };
+
   const renderRow = (app: AppCatalogEntry) => {
     const isSelected = selectedIds.includes(app.id);
     const isInstalled = installed[app.id];
+    const storeUrl = !isInstalled
+      ? getStoreUrl(app, Platform.OS === 'ios' ? 'ios' : 'android')
+      : undefined;
     return (
       <Pressable
         key={app.id}
@@ -120,7 +155,7 @@ export default function AppPicker({
         ]}
         accessibilityRole="checkbox"
         accessibilityState={{ checked: isSelected }}
-        accessibilityLabel={`${app.label}${isInstalled ? ', installed' : ''}`}
+        accessibilityLabel={`${app.label}${isInstalled ? ', installed on this device' : ', not installed'}`}
       >
         <View style={styles.rowMain}>
           <Text style={[styles.rowLabel, { fontSize: r.ms(16) }]} numberOfLines={1}>
@@ -134,8 +169,25 @@ export default function AppPicker({
         </View>
         {isInstalled ? (
           <View style={[styles.pill, { paddingHorizontal: r.scale(8) }]}>
-            <Text style={[styles.pillText, { fontSize: r.ms(10) }]}>Installed</Text>
+            <Text style={[styles.pillText, { fontSize: r.ms(10) }]}>On your phone</Text>
           </View>
+        ) : storeUrl ? (
+          <Pressable
+            onPress={(e) => {
+              e.stopPropagation?.();
+              openStore(app);
+            }}
+            hitSlop={6}
+            style={[styles.installPill, { paddingHorizontal: r.scale(10) }]}
+            accessibilityLabel={`Get ${app.label} from the ${Platform.OS === 'ios' ? 'App Store' : 'Play Store'}`}
+          >
+            <Ionicons
+              name={Platform.OS === 'ios' ? 'logo-apple-appstore' : 'logo-google-playstore'}
+              size={r.ms(12)}
+              color="#9B7BB8"
+            />
+            <Text style={[styles.installPillText, { fontSize: r.ms(11) }]}>Get</Text>
+          </Pressable>
         ) : null}
         <View
           style={[
@@ -184,9 +236,7 @@ export default function AppPicker({
           <View style={styles.probing}>
             <ActivityIndicator color="#9B7BB8" />
             <Text style={[styles.probingText, { fontSize: r.ms(12) }]}>
-              {Platform.OS === 'ios'
-                ? 'Checking which apps you have…'
-                : 'Loading apps…'}
+              Looking at what you already have…
             </Text>
           </View>
         ) : null}
@@ -194,7 +244,7 @@ export default function AppPicker({
         {grouped.installedApps.length > 0 ? (
           <View style={styles.section}>
             <Text style={[styles.sectionHeader, { fontSize: r.ms(12) }]}>
-              On your device
+              On your phone
             </Text>
             {grouped.installedApps.map(renderRow)}
           </View>
@@ -210,7 +260,9 @@ export default function AppPicker({
         ))}
 
         {!probing && visible.length === 0 ? (
-          <Text style={[styles.empty, { fontSize: r.ms(14) }]}>No matches.</Text>
+          <Text style={[styles.empty, { fontSize: r.ms(14) }]}>
+            Nothing matches that search.
+          </Text>
         ) : null}
       </ScrollView>
     </View>
@@ -260,6 +312,17 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
   },
   pillText: { color: '#3B7A4B', fontWeight: '700', letterSpacing: 0.4 },
+  installPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#F2EEF7',
+    borderRadius: 999,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: '#E2D7EC',
+  },
+  installPillText: { color: '#7A5BA0', fontWeight: '700', letterSpacing: 0.3 },
   check: {
     borderWidth: 2,
     borderColor: '#CFC5D9',

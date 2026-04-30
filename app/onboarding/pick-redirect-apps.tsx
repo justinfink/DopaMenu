@@ -54,8 +54,8 @@ export default function PickRedirectApps() {
           role="redirect"
           selectedIds={selected}
           onChange={setSelected}
-          title="Where would you rather go?"
-          subtitle="When an urge hits, DopaMenu will offer one of these. Pick a few you actually enjoy."
+          title="What would you rather do?"
+          subtitle="When you reach for one of those apps, DopaMenu will offer one of these instead. Pick a few you actually like — and tap Get on anything you want to install."
         />
       </View>
       <View style={[styles.footer, { padding: r.scale(20) }]}>

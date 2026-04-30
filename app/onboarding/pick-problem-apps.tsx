@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { View, Text, StyleSheet, SafeAreaView, Platform } from 'react-native';
+import { View, Text, StyleSheet, SafeAreaView, Platform, Alert } from 'react-native';
 import { router } from 'expo-router';
 import { AppPicker, Button } from '../../src/components';
 import IosFamilyControlsPicker from '../../src/components/onboarding/IosFamilyControlsPicker';
@@ -37,11 +37,17 @@ export default function PickProblemApps() {
     Platform.OS === 'ios' && hasProblemAppSelection() ? 1 : 0,
   );
 
-  const handleNext = async () => {
+  // True if the user has actually picked something to track. We use this to
+  // (a) decide what the bottom button says and (b) warn before letting them
+  // skip the whole step.
+  const canContinue =
+    Platform.OS === 'ios' ? iosSelectionCount > 0 : selected.length > 0;
+
+  const persistAndAdvance = async () => {
     if (Platform.OS === 'ios') {
-      // iOS: tokens are opaque, we don't maintain our own list. The selection
-      // is already persisted to App Group by the picker. Flip on blocking now
-      // so the Shield is armed by the time the user exits onboarding.
+      // iOS: tokens are opaque, we don't keep our own list. Apple's picker
+      // already wrote the selection to App Group storage. Flip blocking on
+      // now so the Shield is armed before they leave this screen.
       if (hasProblemAppSelection()) {
         try {
           await startBlocking();
@@ -68,8 +74,31 @@ export default function PickProblemApps() {
     router.push('/onboarding/pick-redirect-apps');
   };
 
-  const canContinue =
-    Platform.OS === 'ios' ? iosSelectionCount > 0 : selected.length > 0;
+  const handleNext = async () => {
+    if (canContinue) {
+      await persistAndAdvance();
+      return;
+    }
+    // No selection — make sure the user knows what skipping means before we
+    // let them through. On iOS especially, skipping leaves them with zero
+    // app blocking; better to warn than ship a "feature" that isn't there.
+    Alert.alert(
+      'Skip this step?',
+      Platform.OS === 'ios'
+        ? "Without picking apps here, DopaMenu can't step in when you open Instagram, TikTok, or anything else. You can come back any time from Settings, but the rest of the app won't have much to do until you do."
+        : "DopaMenu won't have any apps to gently interrupt. You can come back any time from Settings.",
+      [
+        { text: 'Go back', style: 'cancel' },
+        {
+          text: 'Skip anyway',
+          style: 'destructive',
+          onPress: () => {
+            void persistAndAdvance();
+          },
+        },
+      ],
+    );
+  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -82,8 +111,9 @@ export default function PickProblemApps() {
             role="problem"
             selectedIds={selected}
             onChange={setSelected}
+            preselectInstalledPopular
             title="Which apps pull you in?"
-            subtitle="Pick the ones you'd like a gentle redirect from. We'll keep this private to your device."
+            subtitle="Pick the ones you want a gentler relationship with. We've already checked off the four most people choose, if they're on your phone — adjust to taste."
           />
         )}
       </View>
