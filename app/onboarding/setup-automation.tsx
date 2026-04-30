@@ -44,6 +44,25 @@ import { useResponsive } from '../../src/utils/responsive';
 const SHORTCUTS_DEEPLINK = 'shortcuts://create-automation';
 const SHORTCUTS_FALLBACK_DEEPLINK = 'shortcuts://';
 
+// iOS 15 fallback: AppIntents framework only exists on iOS 16+. So on iOS 15
+// our "Take a Pause" action doesn't auto-appear in Shortcuts.app. The
+// alternative is an iCloud-signed shortcut that the user installs once,
+// then references in their Personal Automation as "Run Shortcut → DopaMenu
+// Pause." The iCloud URL below is permanent — generated from a one-time
+// upload of a hand-built shortcut whose only action is
+// "Open URL dopamenu://intervention?source=automation". When fired, our
+// existing handleDeepLink in app/_layout.tsx routes to the intervention
+// modal exactly as the AppIntent path does.
+const ICLOUD_SHORTCUT_URL =
+  'https://www.icloud.com/shortcuts/b42c29cf21054d118c21a631f9ec8e78';
+
+// iOS 16+ has the AppIntent registered automatically via
+// DopaMenuAppShortcutsProvider in DopaMenuAppIntents.swift. iOS 15 needs the
+// iCloud-shared shortcut import flow. We dispatch the walkthrough off this.
+const IOS_VERSION_NUM =
+  Platform.OS === 'ios' ? parseInt(String(Platform.Version), 10) : 0;
+const NEEDS_ICLOUD_SHORTCUT = Platform.OS === 'ios' && IOS_VERSION_NUM < 16;
+
 export default function SetupAutomationScreen() {
   const r = useResponsive();
   const { user, updatePreferences } = useUserStore();
@@ -107,6 +126,23 @@ export default function SetupAutomationScreen() {
         );
         setWaitingForAutomation(false);
       }
+    }
+  };
+
+  // iOS 15 step 1: install the iCloud-shared shortcut. Universal link to
+  // iCloud auto-routes to Shortcuts.app, which presents the import preview
+  // ("Add Shortcut?"). User taps once. Shortcut is named "DopaMenu Pause"
+  // with a single Open URL action — no further configuration needed.
+  const installICloudShortcut = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    try {
+      await Linking.openURL(ICLOUD_SHORTCUT_URL);
+    } catch {
+      Alert.alert(
+        "Couldn't reach iCloud",
+        "Make sure you're online, then tap again. Or paste this URL into Safari yourself: " +
+          ICLOUD_SHORTCUT_URL,
+      );
     }
   };
 
@@ -179,18 +215,37 @@ export default function SetupAutomationScreen() {
             What you'll do next
           </Text>
 
+          {NEEDS_ICLOUD_SHORTCUT ? (
+            <View style={[styles.step, { marginTop: spacing.md }]}>
+              <View style={[styles.stepNum, { width: r.scale(24), height: r.scale(24) }]}>
+                <Text style={[styles.stepNumText, { fontSize: r.ms(12) }]}>1</Text>
+              </View>
+              <Text style={[styles.stepText, { fontSize: r.ms(14) }]}>
+                Tap <Text style={styles.bold}>Add the DopaMenu Pause shortcut</Text>{' '}
+                below. Shortcuts will open and ask "Add Shortcut?" — tap{' '}
+                <Text style={styles.bold}>Add Shortcut</Text>.
+              </Text>
+            </View>
+          ) : null}
+
           <View style={[styles.step, { marginTop: spacing.md }]}>
             <View style={[styles.stepNum, { width: r.scale(24), height: r.scale(24) }]}>
-              <Text style={[styles.stepNumText, { fontSize: r.ms(12) }]}>1</Text>
+              <Text style={[styles.stepNumText, { fontSize: r.ms(12) }]}>
+                {NEEDS_ICLOUD_SHORTCUT ? '2' : '1'}
+              </Text>
             </View>
             <Text style={[styles.stepText, { fontSize: r.ms(14) }]}>
-              We'll open the Shortcuts app to the right screen.
+              {NEEDS_ICLOUD_SHORTCUT
+                ? 'Then tap Open Shortcuts (Apple’s app, blue icon).'
+                : "We'll open the Shortcuts app to the right screen."}
             </Text>
           </View>
 
           <View style={styles.step}>
             <View style={[styles.stepNum, { width: r.scale(24), height: r.scale(24) }]}>
-              <Text style={[styles.stepNumText, { fontSize: r.ms(12) }]}>2</Text>
+              <Text style={[styles.stepNumText, { fontSize: r.ms(12) }]}>
+                {NEEDS_ICLOUD_SHORTCUT ? '3' : '2'}
+              </Text>
             </View>
             <View style={{ flex: 1 }}>
               <Text style={[styles.stepText, { fontSize: r.ms(14) }]}>
@@ -215,18 +270,32 @@ export default function SetupAutomationScreen() {
 
           <View style={styles.step}>
             <View style={[styles.stepNum, { width: r.scale(24), height: r.scale(24) }]}>
-              <Text style={[styles.stepNumText, { fontSize: r.ms(12) }]}>3</Text>
+              <Text style={[styles.stepNumText, { fontSize: r.ms(12) }]}>
+                {NEEDS_ICLOUD_SHORTCUT ? '4' : '3'}
+              </Text>
             </View>
             <Text style={[styles.stepText, { fontSize: r.ms(14) }]}>
-              Tap Next, then in the action list tap{' '}
-              <Text style={styles.bold}>DopaMenu</Text> →{' '}
-              <Text style={styles.bold}>Take a Pause</Text>.
+              {NEEDS_ICLOUD_SHORTCUT ? (
+                <>
+                  Tap Next. In the action list, search{' '}
+                  <Text style={styles.bold}>Run Shortcut</Text> → tap it →
+                  pick <Text style={styles.bold}>DopaMenu Pause</Text>.
+                </>
+              ) : (
+                <>
+                  Tap Next, then in the action list tap{' '}
+                  <Text style={styles.bold}>DopaMenu</Text> →{' '}
+                  <Text style={styles.bold}>Take a Pause</Text>.
+                </>
+              )}
             </Text>
           </View>
 
           <View style={styles.step}>
             <View style={[styles.stepNum, { width: r.scale(24), height: r.scale(24) }]}>
-              <Text style={[styles.stepNumText, { fontSize: r.ms(12) }]}>4</Text>
+              <Text style={[styles.stepNumText, { fontSize: r.ms(12) }]}>
+                {NEEDS_ICLOUD_SHORTCUT ? '5' : '4'}
+              </Text>
             </View>
             <Text style={[styles.stepText, { fontSize: r.ms(14) }]}>
               Tap Done. That's it — come back here.
@@ -246,7 +315,25 @@ export default function SetupAutomationScreen() {
       </ScrollView>
 
       <View style={[styles.footer, { padding: r.scale(20) }]}>
-        <Button title="Open Shortcuts" onPress={openShortcuts} fullWidth size="large" />
+        {NEEDS_ICLOUD_SHORTCUT ? (
+          <>
+            <Button
+              title="Add the DopaMenu Pause shortcut"
+              onPress={installICloudShortcut}
+              fullWidth
+              size="large"
+            />
+            <View style={{ height: spacing.sm }} />
+            <Button
+              title="Then open Shortcuts"
+              onPress={openShortcuts}
+              fullWidth
+              size="large"
+            />
+          </>
+        ) : (
+          <Button title="Open Shortcuts" onPress={openShortcuts} fullWidth size="large" />
+        )}
         <Pressable onPress={() => router.back()} style={{ marginTop: spacing.md }}>
           <Text style={[styles.linkText, { fontSize: r.ms(14) }]}>Skip for now</Text>
         </Pressable>

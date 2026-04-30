@@ -243,6 +243,24 @@ export default function RootLayout() {
               // to send the user back into when they tap Continue.
               triggerLabel = shieldName;
             }
+          } else if (source === 'automation') {
+            // iOS 15 fallback path: Personal Automation runs an iCloud-shared
+            // shortcut whose only action is "Open URL
+            // dopamenu://intervention?source=automation". On iOS 16+ this
+            // same source is set by the App Group flag handoff in
+            // handleAutomationHandoff, but if a user has both flows wired
+            // up we want either to mark setup complete and route to the
+            // intervention modal. Debounce so a stray double-fire doesn't
+            // double-show the modal.
+            if (!shouldShowIntervention()) return;
+            markInterventionShown();
+            if (!currentUser.preferences.iosAutomationConfigured) {
+              const { updatePreferences } = useUserStore.getState();
+              updatePreferences({ iosAutomationConfigured: true });
+            }
+            analyticsService.track(AnalyticsEvents.INTERVENTION_SHOWN, {
+              trigger: 'ios_automation_url',
+            });
           } else if (!triggerPackageName) {
             const iosBundleId = params.get('app') || undefined;
             if (iosBundleId) {
