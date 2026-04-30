@@ -101,17 +101,27 @@ export function applyShieldAppearance(): void {
   // our config and Apple falls back to its default Shield — which blocks the
   // app but has no "Take a pause" button and no path back to DopaMenu. This
   // exact bug stranded the Shield in the first Garrison test.
+  // Copy is honest about what each button DOES on this Shield. The primary
+  // button just closes the Shield (no promise of opening DopaMenu — Apple
+  // does not officially support host-app launches from ShieldActionDelegate
+  // and the undocumented NSExtensionContext.open() trick is unreliable on
+  // iOS 18). The actual redirect-to-DopaMenu experience runs through the
+  // Personal Automation set up in Settings (the tap-free path). Without
+  // tap-free, the Shield is pure friction — which is still useful as a
+  // "do you really want to?" prompt — but we don't lie about it routing
+  // anywhere. With tap-free set up, the automation intercepts the app open
+  // BEFORE the Shield sees it, so most users never view this Shield at all.
   RNDA!.userDefaultsSet('shieldConfiguration', {
     backgroundColor: softBg,
     title: 'Pause.',
     titleColor: dark,
     subtitle:
-      'Before you open {applicationOrDomainDisplayName}, take a breath with DopaMenu.',
+      'Take a breath before opening {applicationOrDomainDisplayName}. Are you sure?',
     subtitleColor: dark,
-    primaryButtonLabel: 'Take a pause',
+    primaryButtonLabel: 'Take a breath',
     primaryButtonLabelColor: white,
     primaryButtonBackgroundColor: purple,
-    secondaryButtonLabel: 'Not now',
+    secondaryButtonLabel: 'Open {applicationOrDomainDisplayName}',
     secondaryButtonLabelColor: purple,
     iconSystemName: 'leaf.circle.fill',
     iconTint: purple,

@@ -31,7 +31,7 @@ import {
   AppStateStatus,
   Alert,
 } from 'react-native';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Button } from '../../src/components';
@@ -66,6 +66,25 @@ const NEEDS_ICLOUD_SHORTCUT = Platform.OS === 'ios' && IOS_VERSION_NUM < 16;
 export default function SetupAutomationScreen() {
   const r = useResponsive();
   const { user, updatePreferences } = useUserStore();
+  // `from=onboarding` tells us this screen is the LAST step of the new-user
+  // flow (after permissions, before /(tabs)). In that mode "go back" doesn't
+  // make sense — the back-stack contains the permissions screen we just
+  // replace()'d off, and either way we want the user to land on the home tab
+  // when they're done. From Settings, this screen is router.push()'d and
+  // router.back() is the correct return path.
+  const params = useLocalSearchParams<{ from?: string }>();
+  const fromOnboarding = params.from === 'onboarding';
+
+  // Single source of truth for "where do we send the user when they're done
+  // here, by skip or by success?" — keeps the handful of exit points below
+  // honest about which mode we're in.
+  const exitToHome = React.useCallback(() => {
+    if (fromOnboarding) {
+      router.replace('/(tabs)');
+    } else {
+      router.back();
+    }
+  }, [fromOnboarding]);
 
   // Surface tracked apps as a visual list so the user knows exactly which
   // apps to tap on the next screen. On iOS our trackedApps store can be
@@ -101,7 +120,7 @@ export default function SetupAutomationScreen() {
         Alert.alert(
           "You're set up.",
           "DopaMenu will now step in instantly when you open one of those apps. You can adjust which apps any time from Settings.",
-          [{ text: 'Great', onPress: () => router.back() }],
+          [{ text: 'Great', onPress: exitToHome }],
         );
       }
     });
@@ -180,7 +199,7 @@ export default function SetupAutomationScreen() {
             size="large"
           />
           <Pressable
-            onPress={() => router.back()}
+            onPress={exitToHome}
             style={{ marginTop: spacing.md }}
           >
             <Text style={[styles.linkText, { fontSize: r.ms(14) }]}>I'll come back later</Text>
@@ -195,19 +214,38 @@ export default function SetupAutomationScreen() {
       <ScrollView
         contentContainerStyle={[styles.content, { padding: r.scale(20) }]}
       >
-        <Pressable onPress={() => router.back()} style={styles.backButton}>
-          <Ionicons name="chevron-back" size={r.scale(22)} color={colors.textSecondary} />
-          <Text style={[styles.backText, { fontSize: r.ms(15) }]}>Back</Text>
-        </Pressable>
+        {/* Hide the back chevron when this is the last onboarding step. The
+            previous screen is permissions, which we replace()'d off — going
+            "back" there would land the user in a half-broken state. From
+            Settings the back arrow is the right behavior. */}
+        {!fromOnboarding ? (
+          <Pressable onPress={() => router.back()} style={styles.backButton}>
+            <Ionicons name="chevron-back" size={r.scale(22)} color={colors.textSecondary} />
+            <Text style={[styles.backText, { fontSize: r.ms(15) }]}>Back</Text>
+          </Pressable>
+        ) : null}
 
-        <Text style={[styles.eyebrow, { fontSize: r.ms(11) }]}>OPTIONAL · 30 SECONDS</Text>
+        <Text style={[styles.eyebrow, { fontSize: r.ms(11) }]}>
+          {fromOnboarding ? 'LAST STEP · 30 SECONDS' : 'TAP-FREE MODE · 30 SECONDS'}
+        </Text>
         <Text style={[styles.title, { fontSize: r.ms(28), marginTop: 4 }]}>
-          Tap-free mode
+          One last setup.
         </Text>
         <Text style={[styles.subtitle, { fontSize: r.ms(15) }]}>
-          DopaMenu can step in <Text style={styles.bold}>before</Text> the app
-          opens — you tap Instagram, DopaMenu appears instantly, no Shield to
-          tap through. Apple needs you to set this up once.
+          {fromOnboarding ? (
+            <>
+              This is the part that makes DopaMenu actually work — a tiny
+              Shortcuts automation so we step in <Text style={styles.bold}>before</Text>{' '}
+              the app opens, instead of after. Apple won't let us do it for
+              you, but it's about 30 seconds of tapping.
+            </>
+          ) : (
+            <>
+              DopaMenu can step in <Text style={styles.bold}>before</Text> the app
+              opens — you tap Instagram, DopaMenu appears instantly, no Shield to
+              tap through. Apple needs you to set this up once.
+            </>
+          )}
         </Text>
 
         <View style={[styles.card, { padding: r.scale(16), marginTop: r.scale(20) }]}>
@@ -308,8 +346,9 @@ export default function SetupAutomationScreen() {
           <Text style={[styles.noteText, { fontSize: r.ms(12) }]}>
             You're not coding anything — Apple's UI does the work. Once it's
             set, DopaMenu's intervention takes over <Text style={styles.bold}>before</Text>
-            {' '}those apps load. Skip this and the Shield still works, just with one
-            extra tap.
+            {' '}those apps load. If you skip, you'll still see Apple's Shield when
+            you open them, but it can't reliably open DopaMenu for you — this
+            step is what makes that work.
           </Text>
         </View>
       </ScrollView>
@@ -334,8 +373,10 @@ export default function SetupAutomationScreen() {
         ) : (
           <Button title="Open Shortcuts" onPress={openShortcuts} fullWidth size="large" />
         )}
-        <Pressable onPress={() => router.back()} style={{ marginTop: spacing.md }}>
-          <Text style={[styles.linkText, { fontSize: r.ms(14) }]}>Skip for now</Text>
+        <Pressable onPress={exitToHome} style={{ marginTop: spacing.md }}>
+          <Text style={[styles.linkText, { fontSize: r.ms(14) }]}>
+            {fromOnboarding ? "I'll set this up later" : 'Skip for now'}
+          </Text>
         </Pressable>
       </View>
     </SafeAreaView>

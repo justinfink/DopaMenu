@@ -728,6 +728,28 @@ export default function PermissionsScreen() {
     await appUsageService.stopOnboardingWatch();
     activeWatchRef.current = null;
     completeOnboarding();
+    // iOS: tap-free mode (Shortcuts automation) is the PRIMARY intervention
+    // path now — Apple's ShieldActionDelegate cannot reliably open DopaMenu
+    // from the Shield, so we rely on a Personal Automation that fires before
+    // the tracked app loads. That setup is a guided walkthrough at
+    // /onboarding/setup-automation. Sending the user there *after*
+    // completeOnboarding() runs is intentional: if they bail on the
+    // Shortcuts walkthrough, they're still a fully-onboarded user with the
+    // Shield armed as a soft fallback, and they can come back to the
+    // walkthrough any time from Settings → Set up tap-free mode.
+    if (Platform.OS === 'ios') {
+      // Pass from=onboarding so setup-automation knows to send the user to
+      // /(tabs) on Skip / completion (instead of router.back(), which would
+      // bounce them into a defunct permissions back-stack entry). Use the
+      // object form (not "?from=onboarding" appended to the path) — expo-
+      // router's typed routes reject query-string concatenation on string
+      // literal routes; this is the documented way to pass params.
+      router.replace({
+        pathname: '/onboarding/setup-automation',
+        params: { from: 'onboarding' },
+      });
+      return;
+    }
     router.replace('/(tabs)');
   };
 
