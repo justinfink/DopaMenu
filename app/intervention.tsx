@@ -25,7 +25,8 @@ import {
   suppressBlocking as suppressIosBlocking,
   readShieldTrigger,
 } from '../src/services/iosFamilyControls';
-import { APP_CATALOG } from '../src/constants/appCatalog';
+import { APP_CATALOG, AppCatalogEntry, getPopularProblemApps } from '../src/constants/appCatalog';
+import { installedAppsService } from '../src/services/installedApps';
 import { colors, spacing, borderRadius, typography, shadows } from '../src/constants/theme';
 
 // How long to suppress re-intercepts on the trigger package after the user
@@ -197,6 +198,13 @@ export default function InterventionScreen() {
 
   const [showAlternatives, setShowAlternatives] = useState(false);
   const [selectedAlternative, setSelectedAlternative] = useState<InterventionCandidate | null>(null);
+  // Catalog entries to show as Continue chips when we don't know which trigger
+  // app fired (Path B / iOS tap-free automation — Apple doesn't pass the app
+  // through to the AppIntent). Computed once on mount: on iOS 16+ we probe
+  // the popular problem apps for installed status (since user.trackedApps is
+  // empty when Apple's native picker is used); on iOS 15 / Android we fall
+  // back to the user's own trackedApps list.
+  const [continueOptions, setContinueOptions] = useState<AppCatalogEntry[]>([]);
 
   const slideAnim = useRef(new Animated.Value(SCREEN_HEIGHT)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -239,6 +247,40 @@ export default function InterventionScreen() {
       }
     };
   }, []);
+
+  // Populate the Continue-chip row when we don't know the trigger app. On
+  // iOS 16+ we have no trackedApps list (Apple's tokens are opaque), so we
+  // probe popular catalog entries for installed status. On iOS 15 / Android
+  // we use the user's own trackedApps list — they explicitly picked these
+  // in onboarding, so they're the most likely set of apps the user was
+  // reaching for.
+  useEffect(() => {
+    if (activeTriggerPackage || activeTriggerLabel) return; // Path A — no chip row needed
+    let cancelled = false;
+    (async () => {
+      const fromTracked = (user?.preferences.trackedApps ?? [])
+        .filter((a) => a.enabled && a.catalogId)
+        .map((a) => APP_CATALOG.find((c) => c.id === a.catalogId))
+        .filter((e): e is AppCatalogEntry => !!e);
+      if (fromTracked.length > 0) {
+        if (!cancelled) setContinueOptions(fromTracked.slice(0, 8));
+        return;
+      }
+      // iOS 16+ (Apple-picker path) or any platform with no tracked list yet.
+      // Probe popular problem apps for installed-state and surface the
+      // installed ones first.
+      const popular = getPopularProblemApps();
+      const installed = await installedAppsService.probe(popular);
+      if (cancelled) return;
+      const ranked = popular
+        .filter((a) => installed[a.id])
+        .concat(popular.filter((a) => !installed[a.id]));
+      setContinueOptions(ranked.slice(0, 6));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTriggerPackage, activeTriggerLabel, user]);
 
   // closeAndExit: animate out, clear store, then route the user somewhere
   // sensible based on what they just did:
@@ -360,6 +402,60 @@ export default function InterventionScreen() {
   const handleSelectAlternative = (intervention: InterventionCandidate) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSelectedAlternative(intervention);
+  };
+
+  // Used when the modal can't auto-route Continue to the originating app
+  // because the trigger context wasn't passed through (Path B / iOS tap-free).
+  // The user picks the app they meant from the chip row; we suppress the
+  // Shield (so the launch doesn't re-fire any safety net) and deep-link there.
+  const handleContinueToApp = async (entry: AppCatalogEntry) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    recordOutcome('continued_default');
+    if (Platform.OS === 'ios') {
+      try {
+        // No tokenHash because the Shield never fired in the tap-free path —
+        // suppressBlocking just lifts any active managed-settings shield for
+        // the standard window so we don't bounce.
+        await suppressIosBlocking(undefined);
+      } catch (err: any) {
+        Alert.alert(
+          "Couldn't unlock that app",
+          "DopaMenu tried to step out of the way for 30 seconds, but iPhone said no. " +
+            (err?.message ? `\n\nDetails: ${err.message}` : ''),
+        );
+        return;
+      }
+    }
+    let opened = false;
+    if (Platform.OS === 'ios' && entry.iosScheme) {
+      try {
+        const supported = await Linking.canOpenURL(entry.iosScheme);
+        if (supported) {
+          await Linking.openURL(entry.iosScheme);
+          opened = true;
+        }
+      } catch {
+        // fall through
+      }
+    } else if (Platform.OS === 'android' && entry.androidPackage) {
+      try {
+        const intentUrl = buildAndroidIntentUrl(entry.androidPackage);
+        await Linking.openURL(intentUrl);
+        opened = true;
+      } catch {
+        // fall through
+      }
+    }
+    // Last-resort web fallback so the user lands somewhere they can use.
+    if (!opened && entry.webUrl) {
+      try {
+        await Linking.openURL(entry.webUrl);
+        opened = true;
+      } catch {
+        // give up
+      }
+    }
+    closeAndExit(opened);
   };
 
   if (!activeIntervention) {
@@ -517,12 +613,56 @@ export default function InterventionScreen() {
               />
             )}
 
-            <TouchableOpacity
-              style={styles.continueButton}
-              onPress={handleContinue}
-            >
-              <Text style={styles.continueText}>Continue what I was doing</Text>
-            </TouchableOpacity>
+            {/* Continue affordance — branches based on whether we know the
+                originating app. Path A (Shield-fired or Android FGS-fired)
+                always passes a trigger label/package, so we render the
+                standard single-tap "Continue what I was doing" link that
+                routes them right back. Path B (iOS tap-free Personal
+                Automation) doesn't pipe the trigger app through Apple's
+                AppIntent perform context, so we render a quick chip row of
+                their tracked apps + popular suggestions; one tap on the app
+                they meant suppresses the Shield and deep-links them there.
+                Either way it's one tap from this screen back into the app —
+                no setup-time per-automation wiring required. */}
+            {(activeTriggerLabel || activeTriggerPackage) ? (
+              <TouchableOpacity
+                style={styles.continueButton}
+                onPress={handleContinue}
+              >
+                <Text style={styles.continueText}>Continue what I was doing</Text>
+              </TouchableOpacity>
+            ) : continueOptions.length > 0 ? (
+              <View style={styles.continuePickerWrap}>
+                <Text style={styles.continuePickerLabel}>
+                  Continue to which one?
+                </Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.continuePickerRow}
+                >
+                  {continueOptions.map((entry) => (
+                    <TouchableOpacity
+                      key={entry.id}
+                      onPress={() => handleContinueToApp(entry)}
+                      style={styles.continueChip}
+                      accessibilityLabel={`Continue to ${entry.label}`}
+                    >
+                      <Text style={styles.continueChipText} numberOfLines={1}>
+                        {entry.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={styles.continueButton}
+                onPress={handleDismiss}
+              >
+                <Text style={styles.continueText}>Close</Text>
+              </TouchableOpacity>
+            )}
 
             <Text style={styles.reassurance}>
               No judgment. Your choice.
@@ -640,6 +780,35 @@ const styles = StyleSheet.create({
   continueButton: {
     paddingVertical: spacing.md,
     alignItems: 'center',
+  },
+  continuePickerWrap: {
+    paddingVertical: spacing.sm,
+  },
+  continuePickerLabel: {
+    fontSize: typography.sizes.sm,
+    color: colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: spacing.sm,
+    fontWeight: typography.weights.medium,
+  },
+  continuePickerRow: {
+    paddingHorizontal: spacing.md,
+    gap: spacing.sm,
+  },
+  continueChip: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: 999,
+    backgroundColor: '#F4EEFB',
+    borderWidth: 1,
+    borderColor: '#E2D7EC',
+    minWidth: 84,
+    alignItems: 'center',
+  },
+  continueChipText: {
+    color: '#5C4A72',
+    fontWeight: typography.weights.semibold,
+    fontSize: typography.sizes.sm,
   },
   continueText: {
     fontSize: typography.sizes.md,
