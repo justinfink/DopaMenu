@@ -24,6 +24,7 @@ import { appUsageService } from '../src/services/appUsage';
 import {
   suppressBlocking as suppressIosBlocking,
   readShieldTrigger,
+  setAutomationBounce,
 } from '../src/services/iosFamilyControls';
 import { APP_CATALOG, AppCatalogEntry, getPopularProblemApps } from '../src/constants/appCatalog';
 import { installedAppsService } from '../src/services/installedApps';
@@ -393,6 +394,24 @@ export default function InterventionScreen() {
         );
         return;
       }
+      // Arm bounce-back so the second automation fire (the one that's about
+      // to happen because we're about to openURL the trigger app) doesn't
+      // re-open the modal. Look up the trigger's iOS scheme via the catalog
+      // since trackedApps is empty on iOS 16+ (Apple's tokens are opaque).
+      const norm = (s?: string | null) =>
+        (s ?? '').normalize('NFKD').replace(/\s+/g, '').toLowerCase();
+      const t = norm(activeTriggerLabel);
+      const p = norm(activeTriggerPackage);
+      const entry = APP_CATALOG.find(
+        (a) =>
+          (a.androidPackage && norm(a.androidPackage) === p) ||
+          (a.iosBundleId && norm(a.iosBundleId) === p) ||
+          (a.id && norm(a.id) === p) ||
+          (a.label && norm(a.label) === t),
+      );
+      if (entry?.iosScheme) {
+        setAutomationBounce(entry.iosScheme);
+      }
     }
     // Continue is the one path that explicitly hands the user back to the app
     // they were trying to open in the first place.
@@ -424,6 +443,14 @@ export default function InterventionScreen() {
             (err?.message ? `\n\nDetails: ${err.message}` : ''),
         );
         return;
+      }
+      // Arm bounce-back so the second automation fire (triggered by us
+      // opening the chosen app right below) doesn't re-launch the modal.
+      // Without this, picking "Continue to Instagram" → infinite loop.
+      if (entry.iosScheme) {
+        setAutomationBounce(entry.iosScheme);
+      } else if (entry.webUrl) {
+        setAutomationBounce(entry.webUrl);
       }
     }
     let opened = false;

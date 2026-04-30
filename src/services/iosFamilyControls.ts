@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import {
   IOS_APP_GROUP,
+  IOS_AUTOMATION_BOUNCE_WINDOW_MS,
   IOS_AUTOMATION_HANDOFF_WINDOW_MS,
   IOS_EVENT_ANALYTICS_FIRST_OPEN,
   IOS_EVENT_SUPPRESSION_EXPIRED,
@@ -9,6 +10,8 @@ import {
   IOS_INTERVENTION_DEBOUNCE_MS,
   IOS_SHIELD_ARMED_TTL_MS,
   IOS_SUPPRESSION_WINDOW_MS,
+  IOS_USERDEFAULTS_AUTOMATION_BOUNCE_TO,
+  IOS_USERDEFAULTS_AUTOMATION_BOUNCE_UNTIL,
   IOS_USERDEFAULTS_AUTOMATION_TRIGGERED_AT,
   IOS_USERDEFAULTS_LAST_INTERVENTION_SHOWN,
   IOS_USERDEFAULTS_LAST_SHIELD_TRIGGER,
@@ -461,4 +464,59 @@ export function lastAutomationTriggerAt(): number {
   if (!isSupported()) return 0;
   const ts = RNDA!.userDefaultsGet<number>(IOS_USERDEFAULTS_AUTOMATION_TRIGGERED_AT) ?? 0;
   return ts * 1000;
+}
+
+// ─── Automation bounce-back (loop fix) ───────────────────────────────────
+//
+// Problem: a Personal Automation that runs OpenDopaMenuPauseIntent on every
+// tracked-app open creates an infinite loop with the Continue path:
+//   tap Instagram → automation fires → DopaMenu → user taps Continue
+//                  → JS openURL(instagram://) → Instagram opens
+//                  → automation fires AGAIN → DopaMenu → ... forever
+//
+// We can't make the AppIntent's `openAppWhenRun` conditional (it's a static
+// constant per Apple's design), so we accept that DopaMenu will briefly
+// foreground on the second fire and use the App Group to short-circuit:
+// JS sets a "bounce-back" target before opening the trigger app, and on the
+// next foreground the layout's automation handler sees the bounce stamp and
+// re-launches the target URL instead of routing to /intervention. Net effect:
+// sub-second DopaMenu flash, then back to Instagram, then no further loops
+// (the bounce stamp clears after one consumption).
+
+/**
+ * Mark "the next automation handoff should bounce back to <url> instead of
+ * showing the intervention modal." Called from intervention.tsx right before
+ * Linking.openURL on a Continue path.
+ */
+export function setAutomationBounce(targetUrl: string): void {
+  if (!isSupported()) return;
+  if (!targetUrl) return;
+  RNDA!.userDefaultsSet(IOS_USERDEFAULTS_AUTOMATION_BOUNCE_TO, targetUrl);
+  RNDA!.userDefaultsSet(
+    IOS_USERDEFAULTS_AUTOMATION_BOUNCE_UNTIL,
+    Date.now() + IOS_AUTOMATION_BOUNCE_WINDOW_MS,
+  );
+}
+
+/**
+ * If a bounce is armed and unexpired, return its target URL and CLEAR the
+ * stamps (single-shot consumption). If expired or absent, return null and
+ * also clear stale stamps so they don't sit around.
+ *
+ * Called from `_layout.tsx` handleAutomationHandoff before deciding whether
+ * to render the intervention modal. A truthy return short-circuits to a
+ * Linking.openURL bounce.
+ */
+export function consumeAutomationBounce(): string | null {
+  if (!isSupported()) return null;
+  const until =
+    RNDA!.userDefaultsGet<number>(IOS_USERDEFAULTS_AUTOMATION_BOUNCE_UNTIL) ?? 0;
+  if (!until) return null;
+  // Always clear (single-shot) — whether it fired or expired.
+  const target =
+    RNDA!.userDefaultsGet<string>(IOS_USERDEFAULTS_AUTOMATION_BOUNCE_TO) ?? null;
+  RNDA!.userDefaultsRemove(IOS_USERDEFAULTS_AUTOMATION_BOUNCE_UNTIL);
+  RNDA!.userDefaultsRemove(IOS_USERDEFAULTS_AUTOMATION_BOUNCE_TO);
+  if (Date.now() > until) return null;
+  return target;
 }

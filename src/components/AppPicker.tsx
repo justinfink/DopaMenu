@@ -119,6 +119,22 @@ export default function AppPicker({
     return { installedApps, others };
   }, [visible, installed]);
 
+  // Foldable category sections. The catalog grew big (60+ apps across
+  // ~12 categories) and an unbroken vertical wall of "Get" buttons is
+  // overwhelming — testers asked us to collapse it. Rules:
+  //   • "On your phone" is never collapsible (it's the most useful list)
+  //   • All other category sections start collapsed
+  //   • If the user types a search query, every section auto-expands so
+  //     they actually see matching results — the open/closed state we
+  //     keep is the user's manual override, search just shows everything
+  //   • Tapping a section header toggles its open/closed state and that
+  //     stays sticky after they clear the search
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const isSearching = query.trim().length > 0;
+  const toggleSection = (cat: string) => {
+    setExpanded((prev) => ({ ...prev, [cat]: !prev[cat] }));
+  };
+
   const toggle = (id: string) => {
     if (selectedIds.includes(id)) {
       onChange(selectedIds.filter((x) => x !== id));
@@ -250,14 +266,39 @@ export default function AppPicker({
           </View>
         ) : null}
 
-        {Object.entries(grouped.others).map(([cat, apps]) => (
-          <View key={cat} style={styles.section}>
-            <Text style={[styles.sectionHeader, { fontSize: r.ms(12) }]}>
-              {categoryLabel(cat)}
-            </Text>
-            {apps.map(renderRow)}
-          </View>
-        ))}
+        {Object.entries(grouped.others).map(([cat, apps]) => {
+          const isOpen = isSearching || expanded[cat];
+          return (
+            <View key={cat} style={styles.section}>
+              <Pressable
+                onPress={() => toggleSection(cat)}
+                style={({ pressed }) => [
+                  styles.sectionHeaderPressable,
+                  { paddingVertical: r.scale(8), paddingHorizontal: r.scale(4) },
+                  pressed && styles.sectionHeaderPressed,
+                ]}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: !!isOpen }}
+                accessibilityLabel={`${categoryLabel(cat)}, ${apps.length} apps, ${isOpen ? 'expanded' : 'collapsed'}`}
+              >
+                <Text style={[styles.sectionHeader, { fontSize: r.ms(12) }]}>
+                  {categoryLabel(cat)}
+                </Text>
+                <View style={styles.sectionHeaderMeta}>
+                  <Text style={[styles.sectionCount, { fontSize: r.ms(11) }]}>
+                    {apps.length}
+                  </Text>
+                  <Ionicons
+                    name={isOpen ? 'chevron-up' : 'chevron-down'}
+                    size={r.scale(16)}
+                    color="#9C91A8"
+                  />
+                </View>
+              </Pressable>
+              {isOpen ? apps.map(renderRow) : null}
+            </View>
+          );
+        })}
 
         {!probing && visible.length === 0 ? (
           <Text style={[styles.empty, { fontSize: r.ms(14) }]}>
@@ -282,14 +323,27 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   searchInput: { flex: 1, paddingVertical: 10, color: '#2E2639' },
-  section: { marginBottom: 16 },
+  section: { marginBottom: 12 },
   sectionHeader: {
     fontWeight: '600',
     color: '#7A6F85',
     letterSpacing: 0.6,
     textTransform: 'uppercase',
+  },
+  sectionHeaderPressable: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     marginBottom: 6,
-    paddingHorizontal: 4,
+    borderRadius: 6,
+  },
+  sectionHeaderPressed: { backgroundColor: '#F2EEF7' },
+  sectionHeaderMeta: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  sectionCount: {
+    color: '#9C91A8',
+    fontWeight: '600',
+    minWidth: 20,
+    textAlign: 'right',
   },
   row: {
     flexDirection: 'row',

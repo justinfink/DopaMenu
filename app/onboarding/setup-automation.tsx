@@ -37,7 +37,12 @@ import * as Haptics from 'expo-haptics';
 import { Button } from '../../src/components';
 import { useUserStore } from '../../src/stores/userStore';
 import { lastAutomationTriggerAt } from '../../src/services/iosFamilyControls';
-import { APP_CATALOG } from '../../src/constants/appCatalog';
+import {
+  APP_CATALOG,
+  AppCatalogEntry,
+  getPopularProblemApps,
+} from '../../src/constants/appCatalog';
+import { installedAppsService } from '../../src/services/installedApps';
 import { colors, spacing, typography } from '../../src/constants/theme';
 import { useResponsive } from '../../src/utils/responsive';
 
@@ -86,28 +91,81 @@ export default function SetupAutomationScreen() {
     }
   }, [fromOnboarding]);
 
-  // Surface tracked apps as a visual list so the user knows exactly which
-  // apps to tap on the next screen. On iOS our trackedApps store can be
-  // empty (Family Controls tokens are opaque), so we fall back to a generic
-  // "the apps you picked in step 1" hint when we don't have explicit names.
-  const trackedApps = useMemo(() => {
-    const fromStore = (user?.preferences.trackedApps ?? [])
-      .filter((a) => a.enabled)
-      .map((a) => ({
-        label: a.label,
-        catalogId: a.catalogId,
-        iosBundleId: a.iosBundleId,
-      }));
-    return fromStore;
-  }, [user]);
+  // Apps to surface as chips so the user knows exactly which ones to tap in
+  // Apple's Shortcuts UI. Two sources, in priority order:
+  //   1. trackedApps from the user store (populated on iOS 15 + Android where
+  //      we use our own RN picker — we know exactly which apps the user
+  //      picked).
+  //   2. On iOS 16+ trackedApps is empty because Apple's FamilyActivityPicker
+  //      stores opaque tokens we can't decode. Fall back to popular installed
+  //      apps as a hint — it's a probable-overlap with what they picked,
+  //      labeled clearly as "look for these" rather than "exactly these."
+  // Either way the chip row gives the user a concrete visual reference to
+  // mindlessly cross-check while they're tapping in Shortcuts.app.
+  const trackedAppsFromStore = useMemo(
+    () =>
+      (user?.preferences.trackedApps ?? [])
+        .filter((a) => a.enabled)
+        .map((a) => ({
+          label: a.label,
+          catalogId: a.catalogId,
+          iosBundleId: a.iosBundleId,
+        })),
+    [user],
+  );
 
-  const [waitingForAutomation, setWaitingForAutomation] = useState(false);
+  const [popularInstalledHint, setPopularInstalledHint] = useState<
+    { label: string; catalogId: string; iosBundleId?: string }[]
+  >([]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    if (trackedAppsFromStore.length > 0) return; // We know the real list
+    let cancelled = false;
+    (async () => {
+      const popular = getPopularProblemApps();
+      const installed = await installedAppsService.probe(popular);
+      if (cancelled) return;
+      const ranked: AppCatalogEntry[] = popular
+        .filter((a) => installed[a.id])
+        .concat(popular.filter((a) => !installed[a.id]));
+      setPopularInstalledHint(
+        ranked.slice(0, 6).map((a) => ({
+          label: a.label,
+          catalogId: a.id,
+          iosBundleId: a.iosBundleId,
+        })),
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [trackedAppsFromStore.length]);
+
+  // Display list: real picks first, fallback otherwise. The `isHint` flag
+  // changes the chip-row label so we don't lie to the user about whether
+  // we know their selection.
+  const displayApps =
+    trackedAppsFromStore.length > 0 ? trackedAppsFromStore : popularInstalledHint;
+  const isHint = trackedAppsFromStore.length === 0;
+
+  // Status of the automation setup. Drives the banner at the top of the
+  // screen. Crucially, this NEVER replaces the steps view — the user can
+  // always scroll the steps + chips while glancing at the banner. Past
+  // versions yanked the steps away and showed an "hourglass" view, which
+  // forced the user to remember the steps in Shortcuts. We don't do that.
+  type SetupStatus = 'idle' | 'waiting' | 'done';
+  const [status, setStatus] = useState<SetupStatus>(() =>
+    user?.preferences.iosAutomationConfigured ? 'done' : 'idle',
+  );
   const lastSeenStampRef = React.useRef(lastAutomationTriggerAt());
 
   // While they're in Shortcuts.app, watch for the automation's first fire.
   // Foreground returns trigger the App Group stamp check; if the stamp moved
-  // forward, it means they actually wired it up. We mark configured + show
-  // a confirmation, then return them to settings.
+  // forward, the automation is wired up. We flip `status` to 'done' and mark
+  // preferences, but we DO NOT auto-exit the screen — the user might want to
+  // re-read the steps to set up additional apps later, or just appreciate
+  // the success state. They leave on their own via the footer button.
   useEffect(() => {
     if (Platform.OS !== 'ios') return;
     const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
@@ -115,21 +173,22 @@ export default function SetupAutomationScreen() {
       const now = lastAutomationTriggerAt();
       if (now > lastSeenStampRef.current) {
         lastSeenStampRef.current = now;
-        updatePreferences({ iosAutomationConfigured: true });
-        setWaitingForAutomation(false);
-        Alert.alert(
-          "You're set up.",
-          "DopaMenu will now step in instantly when you open one of those apps. You can adjust which apps any time from Settings.",
-          [{ text: 'Great', onPress: exitToHome }],
-        );
+        if (!user?.preferences.iosAutomationConfigured) {
+          updatePreferences({ iosAutomationConfigured: true });
+        }
+        setStatus('done');
       }
     });
     return () => sub.remove();
-  }, [updatePreferences]);
+  }, [updatePreferences, user?.preferences.iosAutomationConfigured]);
 
   const openShortcuts = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    setWaitingForAutomation(true);
+    // 'waiting' tells the banner we've sent the user to Shortcuts.app.
+    // We don't reset status='done' here — if they already have a working
+    // automation, opening Shortcuts again to add more apps shouldn't
+    // demote their state.
+    if (status !== 'done') setStatus('waiting');
     try {
       await Linking.openURL(SHORTCUTS_DEEPLINK);
     } catch {
@@ -143,7 +202,7 @@ export default function SetupAutomationScreen() {
           "Couldn't open Shortcuts",
           "Open the Shortcuts app yourself, then tap the Automation tab.",
         );
-        setWaitingForAutomation(false);
+        if (status !== 'done') setStatus('idle');
       }
     }
   };
@@ -178,36 +237,47 @@ export default function SetupAutomationScreen() {
     );
   }
 
-  if (waitingForAutomation) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <View style={[styles.center, { padding: r.scale(24) }]}>
-          <Ionicons name="hourglass-outline" size={r.scale(48)} color={colors.primary} />
-          <Text style={[styles.title, { fontSize: r.ms(22), marginTop: spacing.lg }]}>
-            Waiting for your first automation
-          </Text>
-          <Text style={[styles.body, { fontSize: r.ms(14), textAlign: 'center', marginTop: spacing.sm }]}>
-            Open one of the apps you just picked (like Instagram). DopaMenu
-            should pop up before the app does. Come back here when it works,
-            or tap below if something didn't go right.
-          </Text>
-          <View style={{ height: spacing.xl }} />
-          <Button
-            title="Try setup again"
-            onPress={openShortcuts}
-            fullWidth
-            size="large"
-          />
-          <Pressable
-            onPress={exitToHome}
-            style={{ marginTop: spacing.md }}
-          >
-            <Text style={[styles.linkText, { fontSize: r.ms(14) }]}>I'll come back later</Text>
-          </Pressable>
+  // Status banner shown above the steps. Updates in place — the steps
+  // themselves never get yanked out from under the user. This is the
+  // "screen sticks around" property: regardless of whether they just
+  // tapped Open Shortcuts, just came back, or already wired everything
+  // up, the steps + chips remain visible and the banner reflects state.
+  const renderStatusBanner = () => {
+    if (status === 'done') {
+      return (
+        <View style={[styles.statusBanner, styles.statusDone, { padding: r.scale(12) }]}>
+          <Ionicons name="checkmark-circle" size={r.scale(20)} color="#3B7A4B" />
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.statusTitle, { fontSize: r.ms(14), color: '#2E5535' }]}>
+              Tap-free mode is on.
+            </Text>
+            <Text style={[styles.statusBody, { fontSize: r.ms(12), color: '#3B7A4B' }]}>
+              DopaMenu is now stepping in before those apps open. You can come
+              back here any time to add more apps to the automation.
+            </Text>
+          </View>
         </View>
-      </SafeAreaView>
-    );
-  }
+      );
+    }
+    if (status === 'waiting') {
+      return (
+        <View style={[styles.statusBanner, styles.statusWaiting, { padding: r.scale(12) }]}>
+          <Ionicons name="hourglass" size={r.scale(20)} color={colors.primary} />
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.statusTitle, { fontSize: r.ms(14) }]}>
+              Waiting on your first run…
+            </Text>
+            <Text style={[styles.statusBody, { fontSize: r.ms(12) }]}>
+              Once you save the automation in Shortcuts and open one of those
+              apps, this turns green. The steps below stay here so you can
+              flip back and forth.
+            </Text>
+          </View>
+        </View>
+      );
+    }
+    return null;
+  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -248,7 +318,49 @@ export default function SetupAutomationScreen() {
           )}
         </Text>
 
-        <View style={[styles.card, { padding: r.scale(16), marginTop: r.scale(20) }]}>
+        {/* Status banner: idle/waiting/done. Sits between subtitle and
+            content so it's the first thing the eye lands on after the user
+            comes back from Shortcuts.app. */}
+        <View style={{ marginTop: r.scale(16) }}>{renderStatusBanner()}</View>
+
+        {/* Prominent "apps you're adding" preview. Pulled OUT of step 3
+            so the user has a glanceable visual reference whether or not
+            they've expanded that step yet. Especially valuable when
+            they're switching back-and-forth from Shortcuts.app: open
+            DopaMenu, eyeball the list, switch back to Shortcuts and tap
+            those apps. Header copy adapts to whether we have the real
+            list (iOS 15 + Android — RN picker) or the popular-apps
+            fallback hint (iOS 16+ — opaque Apple tokens). */}
+        {displayApps.length > 0 ? (
+          <View
+            style={[
+              styles.appsCard,
+              { padding: r.scale(14), marginTop: r.scale(12) },
+            ]}
+          >
+            <Text style={[styles.appsCardTitle, { fontSize: r.ms(13) }]}>
+              {isHint
+                ? 'Look for these in Shortcuts'
+                : 'These are your apps'}
+            </Text>
+            <Text style={[styles.appsCardBlurb, { fontSize: r.ms(12) }]}>
+              {isHint
+                ? "iOS doesn't tell us exactly which apps you picked, but most users add at least one of these. Pick the ones you actually use."
+                : "When Shortcuts asks 'which apps?', tap each of these so the automation fires for all of them."}
+            </Text>
+            <View style={[styles.appPreviewRow, { marginTop: r.scale(8) }]}>
+              {displayApps.map((a) => (
+                <View key={a.catalogId ?? a.label} style={styles.appPreviewChip}>
+                  <Text style={[styles.appPreviewChipText, { fontSize: r.ms(12) }]}>
+                    {a.label}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        ) : null}
+
+        <View style={[styles.card, { padding: r.scale(16), marginTop: r.scale(16) }]}>
           <Text style={[styles.cardTitle, { fontSize: r.ms(15) }]}>
             What you'll do next
           </Text>
@@ -285,25 +397,11 @@ export default function SetupAutomationScreen() {
                 {NEEDS_ICLOUD_SHORTCUT ? '3' : '2'}
               </Text>
             </View>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.stepText, { fontSize: r.ms(14) }]}>
-                Tap <Text style={styles.bold}>Open App</Text>, then tap{' '}
-                {trackedApps.length > 0
-                  ? 'each of these to add them all:'
-                  : 'each app you picked in step 1:'}
-              </Text>
-              {trackedApps.length > 0 ? (
-                <View style={styles.appPreviewRow}>
-                  {trackedApps.map((a) => (
-                    <View key={a.catalogId ?? a.label} style={styles.appPreviewChip}>
-                      <Text style={[styles.appPreviewChipText, { fontSize: r.ms(12) }]}>
-                        {a.label}
-                      </Text>
-                    </View>
-                  ))}
-                </View>
-              ) : null}
-            </View>
+            <Text style={[styles.stepText, { fontSize: r.ms(14) }]}>
+              Tap <Text style={styles.bold}>Open App</Text>, then multi-select
+              the apps from the chip list above. (You can come back to this
+              screen any time to remind yourself which ones.)
+            </Text>
           </View>
 
           <View style={styles.step}>
@@ -354,7 +452,26 @@ export default function SetupAutomationScreen() {
       </ScrollView>
 
       <View style={[styles.footer, { padding: r.scale(20) }]}>
-        {NEEDS_ICLOUD_SHORTCUT ? (
+        {status === 'done' ? (
+          // Set up. Primary action is to leave; secondary is "open Shortcuts
+          // again" in case they want to add another app to the same automation.
+          <>
+            <Button
+              title={fromOnboarding ? "Done — let's go" : 'Done'}
+              onPress={exitToHome}
+              fullWidth
+              size="large"
+            />
+            <Pressable
+              onPress={openShortcuts}
+              style={{ marginTop: spacing.md }}
+            >
+              <Text style={[styles.linkText, { fontSize: r.ms(14) }]}>
+                Open Shortcuts to add more apps
+              </Text>
+            </Pressable>
+          </>
+        ) : NEEDS_ICLOUD_SHORTCUT ? (
           <>
             <Button
               title="Add the DopaMenu Pause shortcut"
@@ -364,20 +481,27 @@ export default function SetupAutomationScreen() {
             />
             <View style={{ height: spacing.sm }} />
             <Button
-              title="Then open Shortcuts"
+              title={status === 'waiting' ? 'Re-open Shortcuts' : 'Then open Shortcuts'}
               onPress={openShortcuts}
               fullWidth
               size="large"
             />
           </>
         ) : (
-          <Button title="Open Shortcuts" onPress={openShortcuts} fullWidth size="large" />
+          <Button
+            title={status === 'waiting' ? 'Re-open Shortcuts' : 'Open Shortcuts'}
+            onPress={openShortcuts}
+            fullWidth
+            size="large"
+          />
         )}
-        <Pressable onPress={exitToHome} style={{ marginTop: spacing.md }}>
-          <Text style={[styles.linkText, { fontSize: r.ms(14) }]}>
-            {fromOnboarding ? "I'll set this up later" : 'Skip for now'}
-          </Text>
-        </Pressable>
+        {status !== 'done' ? (
+          <Pressable onPress={exitToHome} style={{ marginTop: spacing.md }}>
+            <Text style={[styles.linkText, { fontSize: r.ms(14) }]}>
+              {fromOnboarding ? "I'll set this up later" : 'Skip for now'}
+            </Text>
+          </Pressable>
+        ) : null}
       </View>
     </SafeAreaView>
   );
@@ -437,6 +561,52 @@ const styles = StyleSheet.create({
     borderColor: '#E2D7EC',
   },
   appPreviewChipText: { color: '#5C4A72', fontWeight: '600' },
+  // Pulled-up "apps you'll add" card. Bigger and more visually prominent
+  // than the in-step preview it replaces — testers said the chips were too
+  // small to glance at while in Shortcuts.app.
+  appsCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#EAE2F1',
+  },
+  appsCardTitle: {
+    color: colors.textPrimary,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  appsCardBlurb: {
+    color: '#7A6F85',
+    marginTop: 4,
+    lineHeight: 17,
+  },
+  // Status banner: idle/waiting/done. Each variant is full-width with a
+  // colored background that's distinct enough to read at a glance, but
+  // soft enough not to scream over the steps below.
+  statusBanner: {
+    flexDirection: 'row',
+    gap: 10,
+    alignItems: 'flex-start',
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  statusWaiting: {
+    backgroundColor: '#F4EEFB',
+    borderColor: '#E2D7EC',
+  },
+  statusDone: {
+    backgroundColor: '#E8F4EA',
+    borderColor: '#B7DFC0',
+  },
+  statusTitle: {
+    color: colors.textPrimary,
+    fontWeight: '700',
+  },
+  statusBody: {
+    color: '#6D6378',
+    marginTop: 2,
+    lineHeight: 17,
+  },
   note: {
     flexDirection: 'row',
     gap: 10,

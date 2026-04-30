@@ -9,6 +9,7 @@ import { useInterventionStore } from '../src/stores/interventionStore';
 import { useCustomInterventionsStore } from '../src/stores/customInterventionsStore';
 import { notificationService, analyticsService, AnalyticsEvents, appUsageService } from '../src/services';
 import {
+  consumeAutomationBounce,
   consumeAutomationHandoff,
   hasProblemAppSelection,
   getAuthorizationStatus as getFamilyControlsStatus,
@@ -126,6 +127,33 @@ export default function RootLayout() {
         if (!consumeAutomationHandoff()) return;
       } catch {
         return;
+      }
+      // ── Bounce-back: break the Continue-to-app loop. If the user just
+      // tapped Continue on the intervention modal, JS armed an automation
+      // bounce stamp pointing at the trigger app's URL scheme. The
+      // automation fires AGAIN as a side effect of our openURL — this
+      // branch catches that second fire and bounces the user back to the
+      // app instead of re-rendering the modal. consumeAutomationBounce()
+      // is single-shot, so a fresh "I tapped Instagram from home" event
+      // after the bounce window expires goes through the normal path.
+      try {
+        const bounceTo = consumeAutomationBounce();
+        if (bounceTo) {
+          // We still consumed the handoff above (clearing the stamp), so
+          // even if the openURL fails the user just lands on the home tab
+          // — better than an infinite loop.
+          void Linking.openURL(bounceTo).catch(() => {
+            /* user lands on tabs; not a loop */
+          });
+          analyticsService.track(AnalyticsEvents.INTERVENTION_SHOWN, {
+            trigger: 'ios_automation_bounce',
+            bounceTo,
+          });
+          return;
+        }
+      } catch {
+        // If the bounce check throws, fall through to the normal modal
+        // path — better to show an extra modal than to silently swallow.
       }
       // Debounce: if a Shield-source intervention or another automation
       // handoff just fired in the last 5s, don't double-fire.

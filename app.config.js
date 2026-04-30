@@ -7,12 +7,13 @@ const POSTHOG_HOST = process.env.POSTHOG_HOST || 'https://app.posthog.com';
 // Keep in sync with IOS_QUERY_SCHEMES in src/constants/appCatalog.ts.
 // Required so Linking.canOpenURL() can probe whether an app is installed on iOS.
 const LS_APPLICATION_QUERIES_SCHEMES = [
-  'alltrails', 'anki', 'audible', 'barcelona', 'bear', 'bumble', 'calm',
-  'chesscom', 'dayone', 'discord', 'duolingo', 'ebay', 'fb', 'garageband',
-  'headspace', 'hinge', 'instagram', 'kindle', 'libby', 'lichess', 'linkedin',
-  'mobilenotes', 'nflx', 'obsidian', 'overcast', 'pinterest', 'pktc', 'podcasts',
-  'readwise', 'reddit', 'snapchat', 'spotify', 'strava', 'things', 'tiktok',
-  'tinder', 'todoist', 'twitch', 'twitter', 'youtube',
+  'alltrails', 'anki', 'applenews', 'audible', 'barcelona', 'bear', 'bumble',
+  'calm', 'chesscom', 'dayone', 'discord', 'duolingo', 'ebay', 'fb',
+  'flipboard', 'garageband', 'headspace', 'hinge', 'ibooks', 'instagram',
+  'kindle', 'libby', 'lichess', 'linkedin', 'mobilenotes', 'nflx', 'obsidian',
+  'overcast', 'pinterest', 'pktc', 'podcasts', 'readwise', 'reddit',
+  'snapchat', 'spotify', 'strava', 'things', 'tiktok', 'tinder', 'todoist',
+  'twitch', 'twitter', 'youtube',
   // DopaMenu's own scheme for Shortcuts deep-link return
   'dopamenu',
   // Apple Shortcuts (for one-tap shortcut import)
