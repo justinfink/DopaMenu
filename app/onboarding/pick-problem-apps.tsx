@@ -47,12 +47,22 @@ export default function PickProblemApps() {
   const [iosSelectionCount, setIosSelectionCount] = useState(
     USE_NATIVE_IOS_PICKER && hasProblemAppSelection() ? 1 : 0,
   );
+  // Review-step gate. iOS 16+ users have to explicitly confirm their picks
+  // are the high-time apps before we let them advance — without this, Apple's
+  // picker can be tap-tap-Done in 1.5 seconds without the user actually
+  // looking at the screen-time numbers Apple is showing them. Pre-filled true
+  // for returning users (a saved selection means they reviewed previously).
+  const [iosReviewed, setIosReviewed] = useState(
+    USE_NATIVE_IOS_PICKER && hasProblemAppSelection(),
+  );
 
   // Continue is only "real" if the user actually picked something. iOS 16+
   // uses the native picker (selection lives in App Group), iOS 15 + Android
-  // use our React Native picker (selection is the `selected` array).
-  const canContinue =
-    USE_NATIVE_IOS_PICKER ? iosSelectionCount > 0 : selected.length > 0;
+  // use our React Native picker (selection is the `selected` array). On iOS
+  // 16+ we additionally require the review confirmation.
+  const canContinue = USE_NATIVE_IOS_PICKER
+    ? iosSelectionCount > 0 && iosReviewed
+    : selected.length > 0;
 
   const persistAndAdvance = async () => {
     if (USE_NATIVE_IOS_PICKER) {
@@ -124,7 +134,10 @@ export default function PickProblemApps() {
       <View style={[styles.content, { paddingHorizontal: r.scale(20), paddingTop: r.vscale(16) }]}>
         <Text style={[styles.step, { fontSize: r.ms(11) }]}>STEP 1 OF 3</Text>
         {USE_NATIVE_IOS_PICKER ? (
-          <IosFamilyControlsPicker onSelectionChange={setIosSelectionCount} />
+          <IosFamilyControlsPicker
+            onSelectionChange={setIosSelectionCount}
+            onSelectionReviewed={setIosReviewed}
+          />
         ) : (
           <AppPicker
             role="problem"

@@ -27,6 +27,9 @@ import {
   getStoreUrl,
 } from '@/constants/appCatalog';
 import { installedAppsService } from '@/services/installedApps';
+import { getPreselectIdsFromTelemetry } from '@/services/telemetryPreselect';
+import { useInterventionStore } from '@/stores/interventionStore';
+import { useUserStore } from '@/stores/userStore';
 import { useResponsive } from '@/utils/responsive';
 
 interface Props {
@@ -41,6 +44,12 @@ interface Props {
    * If true, when this component mounts and the user has nothing selected,
    * we'll auto-check every popular app that's actually installed on the
    * device. Set to true on first-time onboarding, false when re-editing.
+   *
+   * If the user has enough DopaMenu intervention history (analytics on AND
+   * at least TELEMETRY_FLOOR attributed outcomes), we override the static
+   * "popular" list with their personal top-triggered apps instead — the
+   * actual apps THIS user struggles with, not the global default. Falls
+   * back to popular when telemetry is insufficient or analytics is off.
    */
   preselectInstalledPopular?: boolean;
 }
@@ -59,6 +68,14 @@ export default function AppPicker({
   const [installed, setInstalled] = useState<Record<string, boolean>>({});
   const [probing, setProbing] = useState(true);
   const preselectAppliedRef = useRef(false);
+  // Read once at preselect time — we don't want re-rendering AppPicker to
+  // re-seed selection if the user manually unchecks an app while telemetry
+  // updates in the background. Hooks pulled outside of useEffect so the
+  // store subscription is wired correctly.
+  const recentOutcomes = useInterventionStore((s) => s.recentOutcomes);
+  const analyticsEnabled = useUserStore(
+    (s) => s.user?.preferences.analyticsEnabled ?? false,
+  );
 
   const pool = useMemo(() => getAppsByRole(role), [role]);
 
@@ -71,16 +88,35 @@ export default function AppPicker({
       setProbing(false);
 
       // First-run preselect: if caller asked for it AND the user has nothing
-      // checked, auto-check every popular app we detected on the device.
+      // checked, seed selection from either telemetry (if the user has
+      // enough history) or the catalog's static popular flag (cold start).
       // We never override an existing selection — just seed the empty state.
+      // Only applies to the 'problem' role; redirect-app preselection comes
+      // from a different signal (what redirects the user has been accepting),
+      // not what they're triggered on.
       if (
         preselectInstalledPopular &&
         !preselectAppliedRef.current &&
         selectedIds.length === 0
       ) {
-        const seed = pool
-          .filter((a) => a.popular && result[a.id])
-          .map((a) => a.id);
+        const installedIds = pool.filter((a) => result[a.id]).map((a) => a.id);
+        let seed: string[];
+        if (role === 'problem') {
+          const fallbackPopular = pool
+            .filter((a) => a.popular)
+            .map((a) => a.id);
+          seed = getPreselectIdsFromTelemetry({
+            outcomes: recentOutcomes,
+            analyticsEnabled,
+            installedIds,
+            fallbackPopular,
+          });
+        } else {
+          // Redirect role: keep the existing popular-installed behavior.
+          seed = pool
+            .filter((a) => a.popular && result[a.id])
+            .map((a) => a.id);
+        }
         if (seed.length > 0) {
           preselectAppliedRef.current = true;
           onChange(seed);

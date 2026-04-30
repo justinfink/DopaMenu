@@ -7,6 +7,7 @@ import {
   Situation,
   OutcomeAction,
 } from '../models';
+import { APP_CATALOG } from '../constants/appCatalog';
 
 // ============================================
 // Intervention Store
@@ -93,14 +94,38 @@ export const useInterventionStore = create<InterventionState>()(
       },
 
       recordOutcome: (action, followThrough) => {
-        const { activeIntervention } = get();
+        const { activeIntervention, activeTriggerPackage, activeTriggerLabel } =
+          get();
         if (!activeIntervention) return;
+
+        // Resolve trigger to a stable catalog id so the telemetry-preselect
+        // aggregator can rank apps without having to re-do this lookup on
+        // every read. NFKD-normalize both sides because Apple's display
+        // names occasionally include accented quirks ("ínstagram" etc).
+        let triggerCatalogId: string | undefined;
+        if (activeTriggerPackage || activeTriggerLabel) {
+          const norm = (s?: string | null) =>
+            (s ?? '').normalize('NFKD').replace(/\s+/g, '').toLowerCase();
+          const pkg = norm(activeTriggerPackage);
+          const lbl = norm(activeTriggerLabel);
+          const hit = APP_CATALOG.find(
+            (a) =>
+              (a.androidPackage && norm(a.androidPackage) === pkg) ||
+              (a.iosBundleId && norm(a.iosBundleId) === pkg) ||
+              (a.id && norm(a.id) === pkg) ||
+              (a.label && norm(a.label) === lbl),
+          );
+          triggerCatalogId = hit?.id;
+        }
 
         const outcome: Outcome = {
           interventionId: activeIntervention.id,
           actionTaken: action,
           followThrough,
           timestamp: Date.now(),
+          triggerCatalogId,
+          triggerPackage: activeTriggerPackage ?? undefined,
+          triggerLabel: activeTriggerLabel ?? undefined,
         };
 
         set((state) => ({

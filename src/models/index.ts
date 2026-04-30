@@ -294,6 +294,17 @@ export interface Outcome {
   actionTaken: OutcomeAction;
   followThrough?: boolean;
   timestamp: number;
+  // What app fired this intervention. Captured at recordOutcome time from
+  // activeTriggerPackage / activeTriggerLabel on the intervention store.
+  // Optional because:
+  //   • iOS tap-free path doesn't always pipe the trigger through (Apple's
+  //     AppIntent perform context doesn't expose the originating app).
+  //   • Pre-existing outcomes from earlier app versions don't have it.
+  // The aggregator in services/telemetryPreselect treats undefined as
+  // "anonymous trigger" and ignores it for app-specific scoring.
+  triggerCatalogId?: string; // resolved against APP_CATALOG when possible
+  triggerPackage?: string;   // raw android package or iOS bundle ID
+  triggerLabel?: string;     // user-facing label (Instagram, TikTok, ...)
 }
 
 // ============================================
