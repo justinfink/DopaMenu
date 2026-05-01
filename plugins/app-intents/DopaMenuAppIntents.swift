@@ -94,26 +94,24 @@ struct IsBouncingIntent: AppIntent {
   // ever flips to true, the loop returns immediately on every Continue tap.
   static let openAppWhenRun: Bool = false
 
-  // Optional. Personal Automations triggered by "App is Opened" pass the
-  // trigger app reference into the called Shortcut as Shortcut Input. Apple's
-  // public docs don't fully specify the exact data type the Shortcut receives
-  // — so when the user binds Shortcut Input to this parameter, what we see
-  // in `triggerApp` may be a bundle id, a localized display name, an opaque
+  // Personal Automations triggered by "App is Opened" pass the trigger app
+  // reference into the called Shortcut as Shortcut Input. Apple's public docs
+  // don't fully specify the exact data type the called shortcut receives —
+  // so when the user binds Shortcut Input to this parameter, what we see in
+  // `triggerApp` may be a bundle id, a localized display name, an opaque
   // reference, or empty.
   //
-  // We accept all of those: we lowercase + strip whitespace + drop URL
-  // scheme suffixes from both `triggerApp` and the JS-armed
-  // `automationBounceTriggerKey`, and consider them a match if the
-  // normalized strings are equal.
-  //
-  // If `triggerApp` is empty (Shortcut Input wasn't passed, or Apple gives
-  // us nothing usable), we fall back to time-only bounce — the time window
-  // is short enough (8 seconds) that the false-positive risk is small.
+  // Declared as non-optional `String` with `default: ""` so AppIntent's
+  // `@Parameter` macro generates a clean init — making the parameter
+  // optional via `String?` triggers an init-overload mismatch in some
+  // iOS 16/17 toolchains. Empty default behaves identically (we
+  // explicitly check `passed.isEmpty` below).
   @Parameter(
     title: "Trigger app",
-    description: "The app whose open is being checked against the bounce window. Bind Shortcut Input here when calling from a Personal Automation."
+    description: "The app whose open is being checked against the bounce window. Bind Shortcut Input here when calling from a Personal Automation.",
+    default: ""
   )
-  var triggerApp: String?
+  var triggerApp: String
 
   func perform() async throws -> some IntentResult & ReturnsValue<Bool> {
     guard let defaults = UserDefaults(suiteName: "group.ai.dopamenu.app") else {
@@ -132,7 +130,7 @@ struct IsBouncingIntent: AppIntent {
     // window still intervenes correctly.
     let storedKey =
       defaults.string(forKey: "automationBounceTriggerKey") ?? ""
-    let passed = (triggerApp ?? "").trimmingCharacters(in: .whitespaces)
+    let passed = triggerApp.trimmingCharacters(in: .whitespaces)
 
     if !passed.isEmpty && !storedKey.isEmpty {
       // Same normalization as JS's normalizeTriggerKey() in
@@ -162,11 +160,20 @@ struct DopaMenuAppShortcutsProvider: AppShortcutsProvider {
   static let shortcutTileColor: ShortcutTileColor = .purple
 
   static var appShortcuts: [AppShortcut] {
-    // Both intents must be registered here so Shortcuts.app's action picker
-    // surfaces them when the user (or Justin, when building the hosted Pause
-    // Shortcut) searches "DopaMenu" or "Take a Pause" or "Check Pause Bounce".
-    // Without this provider entry, the AppIntent compiles into the binary
-    // but Shortcuts.app never knows it exists.
+    // Only Take a Pause is registered as a featured AppShortcut here.
+    // IsBouncingIntent is intentionally NOT in this list:
+    //   1. AppShortcutsBuilder rejected it as a multi-element body alongside
+    //      the parameter-bearing IsBouncingIntent — first attempt errored
+    //      with "no exact matches in call to initializer".
+    //   2. We don't WANT IsBouncingIntent surfaced as a Siri/Spotlight
+    //      suggestion. It's an internal helper for our hosted Pause
+    //      Shortcut, not a user-facing voice action.
+    //   3. iOS 17+ indexes ALL AppIntents from the app target into
+    //      Shortcuts.app's editor action search regardless of provider
+    //      registration — so IsBouncingIntent IS still selectable when
+    //      Justin (or any user) searches "DopaMenu" while building a
+    //      Shortcut. AppShortcuts == featured / surfaced; bare AppIntents
+    //      == discoverable in the editor.
     AppShortcut(
       intent: OpenDopaMenuPauseIntent(),
       phrases: [
@@ -176,15 +183,6 @@ struct DopaMenuAppShortcutsProvider: AppShortcutsProvider {
       ],
       shortTitle: "Take a Pause",
       systemImageName: "leaf.circle.fill"
-    )
-    AppShortcut(
-      intent: IsBouncingIntent(),
-      phrases: [
-        "Check \(.applicationName) pause bounce",
-        "Is \(.applicationName) bouncing",
-      ],
-      shortTitle: "Check Pause Bounce",
-      systemImageName: "arrow.triangle.2.circlepath.circle"
     )
   }
 }
