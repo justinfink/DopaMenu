@@ -11,6 +11,7 @@ import {
   IOS_SHIELD_ARMED_TTL_MS,
   IOS_SUPPRESSION_WINDOW_MS,
   IOS_USERDEFAULTS_AUTOMATION_BOUNCE_TO,
+  IOS_USERDEFAULTS_AUTOMATION_BOUNCE_TRIGGER_KEY,
   IOS_USERDEFAULTS_AUTOMATION_BOUNCE_UNTIL,
   IOS_USERDEFAULTS_AUTOMATION_TRIGGERED_AT,
   IOS_USERDEFAULTS_LAST_INTERVENTION_SHOWN,
@@ -484,14 +485,36 @@ export function lastAutomationTriggerAt(): number {
 // (the bounce stamp clears after one consumption).
 
 /**
- * Mark "the next automation handoff should bounce back to <url> instead of
- * showing the intervention modal." Called from intervention.tsx right before
- * Linking.openURL on a Continue path.
+ * Arm the bounce-back state in App Group UserDefaults. Called from
+ * intervention.tsx the moment the user taps Continue (either the per-trigger
+ * "Continue what I was doing" link or a Continue picker chip), right before
+ * Linking.openURL re-launches the trigger app.
+ *
+ * Three values written:
+ *   • `targetUrl` — the URL we'll openURL into. Used by JS-side bounce
+ *     fallback (defense-in-depth for users on the v17-style direct-AppIntent
+ *     setup who haven't migrated to the wrapper Shortcut yet).
+ *   • `triggerKey` — a normalized lookup key (lowercase + whitespace
+ *     stripped) for the trigger app. IsBouncingIntent compares this against
+ *     whatever Shortcut Input the Personal Automation passes in. If the keys
+ *     match → the spurious re-fire is silenced. If they don't match (the
+ *     user tapped a *different* tracked app within the bounce window), the
+ *     gate opens and the modal shows for the new app.
+ *   • Expiry — `now + IOS_AUTOMATION_BOUNCE_WINDOW_MS` (8 seconds).
+ *
+ * v17 used a single-shot "consume" pattern that cleared the stamps on first
+ * read — the second openURL re-fire then found empty state and re-rendered
+ * the modal, perpetuating the loop. v18 keeps the stamps in place for the
+ * whole window; consumption is by time only. See peekAutomationBounce.
  */
-export function setAutomationBounce(targetUrl: string): void {
+export function setAutomationBounce(targetUrl: string, triggerKey: string): void {
   if (!isSupported()) return;
   if (!targetUrl) return;
   RNDA!.userDefaultsSet(IOS_USERDEFAULTS_AUTOMATION_BOUNCE_TO, targetUrl);
+  RNDA!.userDefaultsSet(
+    IOS_USERDEFAULTS_AUTOMATION_BOUNCE_TRIGGER_KEY,
+    triggerKey ?? '',
+  );
   RNDA!.userDefaultsSet(
     IOS_USERDEFAULTS_AUTOMATION_BOUNCE_UNTIL,
     Date.now() + IOS_AUTOMATION_BOUNCE_WINDOW_MS,
@@ -499,24 +522,78 @@ export function setAutomationBounce(targetUrl: string): void {
 }
 
 /**
- * If a bounce is armed and unexpired, return its target URL and CLEAR the
- * stamps (single-shot consumption). If expired or absent, return null and
- * also clear stale stamps so they don't sit around.
+ * Read-only peek at the bounce stamp. Returns the bounce target URL + the
+ * normalized trigger key if the window is still open, otherwise null. Never
+ * mutates — callable from multiple foreground paths (handleAutomationHandoff
+ * and handleDeepLink's source='automation' branch) within the same fire and
+ * across consecutive fires inside the bounce window.
  *
- * Called from `_layout.tsx` handleAutomationHandoff before deciding whether
- * to render the intervention modal. A truthy return short-circuits to a
- * Linking.openURL bounce.
+ * v18-era loop fix: persistent peek replaces v17's single-shot consume, so
+ * every spurious automation re-fire inside the 8-second envelope continues
+ * to short-circuit instead of re-rendering the modal.
  */
-export function consumeAutomationBounce(): string | null {
+export function peekAutomationBounce(): {
+  targetUrl: string;
+  triggerKey: string;
+} | null {
   if (!isSupported()) return null;
   const until =
     RNDA!.userDefaultsGet<number>(IOS_USERDEFAULTS_AUTOMATION_BOUNCE_UNTIL) ?? 0;
-  if (!until) return null;
-  // Always clear (single-shot) — whether it fired or expired.
-  const target =
-    RNDA!.userDefaultsGet<string>(IOS_USERDEFAULTS_AUTOMATION_BOUNCE_TO) ?? null;
+  if (!until || Date.now() > until) return null;
+  const targetUrl =
+    RNDA!.userDefaultsGet<string>(IOS_USERDEFAULTS_AUTOMATION_BOUNCE_TO) ?? '';
+  const triggerKey =
+    RNDA!.userDefaultsGet<string>(IOS_USERDEFAULTS_AUTOMATION_BOUNCE_TRIGGER_KEY) ??
+    '';
+  return targetUrl ? { targetUrl, triggerKey } : null;
+}
+
+/**
+ * Opportunistic cleanup. No-op while the window is active — we only clear
+ * when the expiry has passed, to keep App Group storage tidy. Safe to call
+ * on every foreground (and we do, so the keys don't accumulate forever in
+ * the rare cases where IsBouncingIntent doesn't run for some reason).
+ */
+export function clearAutomationBounceIfExpired(): void {
+  if (!isSupported()) return;
+  const until =
+    RNDA!.userDefaultsGet<number>(IOS_USERDEFAULTS_AUTOMATION_BOUNCE_UNTIL) ?? 0;
+  if (until && Date.now() > until) {
+    RNDA!.userDefaultsRemove(IOS_USERDEFAULTS_AUTOMATION_BOUNCE_UNTIL);
+    RNDA!.userDefaultsRemove(IOS_USERDEFAULTS_AUTOMATION_BOUNCE_TO);
+    RNDA!.userDefaultsRemove(IOS_USERDEFAULTS_AUTOMATION_BOUNCE_TRIGGER_KEY);
+  }
+}
+
+/**
+ * Hard reset. Reserved for sign-out or "disable automation" flows where we
+ * want to be sure no leftover bounce state can swallow a fresh user tap.
+ */
+export function clearAutomationBounce(): void {
+  if (!isSupported()) return;
   RNDA!.userDefaultsRemove(IOS_USERDEFAULTS_AUTOMATION_BOUNCE_UNTIL);
   RNDA!.userDefaultsRemove(IOS_USERDEFAULTS_AUTOMATION_BOUNCE_TO);
-  if (Date.now() > until) return null;
-  return target;
+  RNDA!.userDefaultsRemove(IOS_USERDEFAULTS_AUTOMATION_BOUNCE_TRIGGER_KEY);
+}
+
+/**
+ * Normalize an app identifier (bundle ID, display name, scheme prefix, etc.)
+ * to a canonical key both sides of the bounce comparison can produce.
+ *
+ *   normalizeTriggerKey("com.burbn.instagram")  → "com.burbn.instagram"
+ *   normalizeTriggerKey("Instagram")            → "instagram"
+ *   normalizeTriggerKey("instagram://")         → "instagram"
+ *   normalizeTriggerKey(" Apple Books ")        → "applebooks"
+ *
+ * Swift-side IsBouncingIntent does the same normalization before comparing
+ * Shortcut Input to the stored key.
+ */
+export function normalizeTriggerKey(raw: string | undefined | null): string {
+  if (!raw) return '';
+  return raw
+    .normalize('NFKD')
+    .replace(/:\/\/$/, '')
+    .replace(/:$/, '')
+    .replace(/\s+/g, '')
+    .toLowerCase();
 }

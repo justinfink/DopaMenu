@@ -25,6 +25,7 @@ import {
   suppressBlocking as suppressIosBlocking,
   readShieldTrigger,
   setAutomationBounce,
+  normalizeTriggerKey,
 } from '../src/services/iosFamilyControls';
 import { APP_CATALOG, AppCatalogEntry, getPopularProblemApps } from '../src/constants/appCatalog';
 import { installedAppsService } from '../src/services/installedApps';
@@ -394,23 +395,27 @@ export default function InterventionScreen() {
         );
         return;
       }
-      // Arm bounce-back so the second automation fire (the one that's about
-      // to happen because we're about to openURL the trigger app) doesn't
-      // re-open the modal. Look up the trigger's iOS scheme via the catalog
-      // since trackedApps is empty on iOS 16+ (Apple's tokens are opaque).
-      const norm = (s?: string | null) =>
-        (s ?? '').normalize('NFKD').replace(/\s+/g, '').toLowerCase();
-      const t = norm(activeTriggerLabel);
-      const p = norm(activeTriggerPackage);
+      // Arm bounce-back so the imminent automation re-fire (caused by our
+      // openURL of the trigger app) is silenced by IsBouncingIntent. Look
+      // up the trigger's catalog entry since trackedApps is empty on iOS
+      // 16+ (Apple's FamilyActivityPicker tokens are opaque). The trigger
+      // key is the bundle id when known — that's what the user's hosted
+      // Pause Shortcut passes via Shortcut Input. Falls back to the catalog
+      // id (e.g. "instagram") if no bundle id is available.
+      const t = normalizeTriggerKey(activeTriggerLabel);
+      const p = normalizeTriggerKey(activeTriggerPackage);
       const entry = APP_CATALOG.find(
         (a) =>
-          (a.androidPackage && norm(a.androidPackage) === p) ||
-          (a.iosBundleId && norm(a.iosBundleId) === p) ||
-          (a.id && norm(a.id) === p) ||
-          (a.label && norm(a.label) === t),
+          (a.androidPackage && normalizeTriggerKey(a.androidPackage) === p) ||
+          (a.iosBundleId && normalizeTriggerKey(a.iosBundleId) === p) ||
+          (a.id && normalizeTriggerKey(a.id) === p) ||
+          (a.label && normalizeTriggerKey(a.label) === t),
       );
       if (entry?.iosScheme) {
-        setAutomationBounce(entry.iosScheme);
+        const triggerKey = normalizeTriggerKey(
+          entry.iosBundleId ?? entry.id ?? entry.label,
+        );
+        setAutomationBounce(entry.iosScheme, triggerKey);
       }
     }
     // Continue is the one path that explicitly hands the user back to the app
@@ -444,13 +449,18 @@ export default function InterventionScreen() {
         );
         return;
       }
-      // Arm bounce-back so the second automation fire (triggered by us
-      // opening the chosen app right below) doesn't re-launch the modal.
-      // Without this, picking "Continue to Instagram" → infinite loop.
+      // Arm bounce-back so the imminent automation re-fire (caused by us
+      // opening the chosen app right below) is silenced by IsBouncingIntent.
+      // The trigger key is the chosen app's bundle id (preferred) so iOS
+      // 16+'s wrapper Shortcut can do per-app comparison; falls back to
+      // catalog id when no bundle id is on the entry.
+      const triggerKey = normalizeTriggerKey(
+        entry.iosBundleId ?? entry.id ?? entry.label,
+      );
       if (entry.iosScheme) {
-        setAutomationBounce(entry.iosScheme);
+        setAutomationBounce(entry.iosScheme, triggerKey);
       } else if (entry.webUrl) {
-        setAutomationBounce(entry.webUrl);
+        setAutomationBounce(entry.webUrl, triggerKey);
       }
     }
     let opened = false;

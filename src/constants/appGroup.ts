@@ -32,22 +32,43 @@ export const IOS_INTERVENTION_DEBOUNCE_MS = 5_000;
 
 /**
  * "Automation bounce-back" — the antidote to the infinite loop where opening
- * Instagram fires the Shortcut → DopaMenu opens → user taps Continue → JS
- * opens Instagram → Shortcut fires AGAIN → DopaMenu opens AGAIN → ...
+ * Instagram fires the user's Personal Automation → DopaMenu opens → user
+ * taps Continue → JS opens Instagram → automation fires AGAIN → DopaMenu
+ * opens AGAIN → ...
  *
- * When the user picks Continue, we stamp a target URL and an expiry. The next
- * time a Personal Automation handoff brings DopaMenu to the foreground, JS
- * checks the bounce stamp first; if it's fresh, JS immediately re-launches
- * the bounce target (e.g. instagram://) and skips the intervention render.
- * The user sees a sub-second flash of DopaMenu instead of being pinballed
- * back into the modal.
+ * v18 architecture: the bounce flag is read by an iOS 16+ AppIntent named
+ * IsBouncingIntent (openAppWhenRun=false, runs entirely in background) which
+ * a hosted iCloud-shared Shortcut wraps in an If/Otherwise gate. When the
+ * user picks Continue, JS arms three values:
+ *   - automationBounceTo:        the target URL we'll openURL into (e.g.
+ *                                "instagram://"). Used as the fallback path
+ *                                if a JS-side bounce check fires (defense
+ *                                in depth for users on the v17-style direct
+ *                                AppIntent setup).
+ *   - automationBounceUntil:     epoch ms when the bounce window expires.
+ *   - automationBounceTriggerKey: a normalized lookup key (e.g. the
+ *                                trigger app's bundle id, lowercased,
+ *                                whitespace-stripped). IsBouncingIntent
+ *                                compares this against whatever
+ *                                "Shortcut Input" the Personal Automation
+ *                                passes in, so a tap on a *different*
+ *                                tracked app within the window still
+ *                                intervenes correctly.
  *
- * Window must be long enough to cover the second automation fire that the
- * first openURL triggers, but short enough that the next legitimate "I just
- * tapped Instagram" event re-arms the intervention. 60 seconds is empirically
- * about right — fires once on the bounce, then expires before the user
- * notices iOS hasn't intervened on a fresh open.
+ * Window dropped from v17's 60_000 to 8_000: the spurious re-fire happens
+ * within ~1-2s of openURL, so 8s gives ample margin while keeping fresh
+ * app-taps (~10s after Continue) treated as fresh user intent. The longer
+ * window had a worse failure mode where tapping a different app inside the
+ * window would silently route through the stale bounce target.
+ *
+ * Unit asymmetry on the App Group keys: `automationBounceUntil` is JS-
+ * authored as epoch *ms*. `automationTriggeredAt` (different key) is
+ * Swift-authored as epoch *seconds*. IsBouncingIntent reads
+ * automationBounceUntil as ms (multiplies Date().timeIntervalSince1970 by
+ * 1000 before comparing). Don't flip a unit.
  */
 export const IOS_USERDEFAULTS_AUTOMATION_BOUNCE_TO = 'automationBounceTo';
 export const IOS_USERDEFAULTS_AUTOMATION_BOUNCE_UNTIL = 'automationBounceUntil';
-export const IOS_AUTOMATION_BOUNCE_WINDOW_MS = 60_000;
+export const IOS_USERDEFAULTS_AUTOMATION_BOUNCE_TRIGGER_KEY =
+  'automationBounceTriggerKey';
+export const IOS_AUTOMATION_BOUNCE_WINDOW_MS = 8_000;

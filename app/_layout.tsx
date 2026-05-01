@@ -9,10 +9,11 @@ import { useInterventionStore } from '../src/stores/interventionStore';
 import { useCustomInterventionsStore } from '../src/stores/customInterventionsStore';
 import { notificationService, analyticsService, AnalyticsEvents, appUsageService } from '../src/services';
 import {
-  consumeAutomationBounce,
+  clearAutomationBounceIfExpired,
   consumeAutomationHandoff,
   hasProblemAppSelection,
   getAuthorizationStatus as getFamilyControlsStatus,
+  peekAutomationBounce,
   startBlocking as startIosBlocking,
   recordShieldTrigger,
   shouldShowIntervention,
@@ -123,37 +124,43 @@ export default function RootLayout() {
     const handleAutomationHandoff = () => {
       if (Platform.OS !== 'ios') return;
       if (!currentUser.preferences.appMonitoringEnabled) return;
+
+      // ── v18 bounce check ────────────────────────────────────────────────
+      // The PRIMARY loop fix in v18 is the hosted iCloud Shortcut wrapper:
+      // when the user is set up correctly, IsBouncingIntent intercepts the
+      // re-fire BEFORE iOS even foregrounds DopaMenu, so this JS handler
+      // never runs on the bounce iteration. But if the user is on the
+      // v17-style direct-AppIntent setup (didn't migrate to the wrapper
+      // shortcut), we still need a JS-side fallback to avoid showing the
+      // modal on the bounce. peekAutomationBounce is read-only and
+      // expires by time only — replaces v17's single-shot consume which
+      // re-introduced the loop after one iteration.
+      let bouncePeek:
+        | { targetUrl: string; triggerKey: string }
+        | null = null;
+      try { bouncePeek = peekAutomationBounce(); } catch {}
+      if (bouncePeek) {
+        // Drain the handoff stamp opportunistically so it doesn't
+        // accumulate (Swift may or may not have stamped it depending on
+        // which path we're in).
+        try { consumeAutomationHandoff(); } catch {}
+        void Linking.openURL(bouncePeek.targetUrl).catch(() => {
+          /* user lands on tabs; not a loop */
+        });
+        analyticsService.track(AnalyticsEvents.INTERVENTION_SHOWN, {
+          trigger: 'ios_automation_bounce',
+          bounceTo: bouncePeek.targetUrl,
+        });
+        return;
+      }
+      // No active bounce — opportunistic cleanup of stale keys, then run
+      // the normal handoff path.
+      try { clearAutomationBounceIfExpired(); } catch {}
+
       try {
         if (!consumeAutomationHandoff()) return;
       } catch {
         return;
-      }
-      // ── Bounce-back: break the Continue-to-app loop. If the user just
-      // tapped Continue on the intervention modal, JS armed an automation
-      // bounce stamp pointing at the trigger app's URL scheme. The
-      // automation fires AGAIN as a side effect of our openURL — this
-      // branch catches that second fire and bounces the user back to the
-      // app instead of re-rendering the modal. consumeAutomationBounce()
-      // is single-shot, so a fresh "I tapped Instagram from home" event
-      // after the bounce window expires goes through the normal path.
-      try {
-        const bounceTo = consumeAutomationBounce();
-        if (bounceTo) {
-          // We still consumed the handoff above (clearing the stamp), so
-          // even if the openURL fails the user just lands on the home tab
-          // — better than an infinite loop.
-          void Linking.openURL(bounceTo).catch(() => {
-            /* user lands on tabs; not a loop */
-          });
-          analyticsService.track(AnalyticsEvents.INTERVENTION_SHOWN, {
-            trigger: 'ios_automation_bounce',
-            bounceTo,
-          });
-          return;
-        }
-      } catch {
-        // If the bounce check throws, fall through to the normal modal
-        // path — better to show an extra modal than to silently swallow.
       }
       // Debounce: if a Shield-source intervention or another automation
       // handoff just fired in the last 5s, don't double-fire.
@@ -275,11 +282,24 @@ export default function RootLayout() {
             // iOS 15 fallback path: Personal Automation runs an iCloud-shared
             // shortcut whose only action is "Open URL
             // dopamenu://intervention?source=automation". On iOS 16+ this
-            // same source is set by the App Group flag handoff in
-            // handleAutomationHandoff, but if a user has both flows wired
-            // up we want either to mark setup complete and route to the
-            // intervention modal. Debounce so a stray double-fire doesn't
-            // double-show the modal.
+            // same source can fire either via the App Group handoff in
+            // handleAutomationHandoff OR via this deep-link path. v18
+            // bounce check applies here too — when the user picks Continue,
+            // the openURL re-launch fires the same iCloud shortcut, which
+            // re-enters this branch. Without the peek check below, we'd
+            // re-render the modal and the loop returns.
+            let bouncePeekDL: { targetUrl: string; triggerKey: string } | null = null;
+            try { bouncePeekDL = peekAutomationBounce(); } catch {}
+            if (bouncePeekDL) {
+              void Linking.openURL(bouncePeekDL.targetUrl).catch(() => {});
+              analyticsService.track(AnalyticsEvents.INTERVENTION_SHOWN, {
+                trigger: 'ios_automation_url_bounce',
+                bounceTo: bouncePeekDL.targetUrl,
+              });
+              return;
+            }
+            try { clearAutomationBounceIfExpired(); } catch {}
+
             if (!shouldShowIntervention()) return;
             markInterventionShown();
             if (!currentUser.preferences.iosAutomationConfigured) {
