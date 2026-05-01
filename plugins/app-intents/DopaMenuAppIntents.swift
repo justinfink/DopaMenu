@@ -83,10 +83,13 @@ struct OpenDopaMenuPauseIntent: AppIntent {
 struct IsBouncingIntent: AppIntent {
   static let title: LocalizedStringResource = "Check Pause Bounce"
 
+  // Single string literal (NOT concat with `+`). IntentDescription's init
+  // takes LocalizedStringResource, which is ExpressibleByStringLiteral —
+  // that conversion only fires for *literals*, not for `String` values
+  // produced by `+`. Concatenating with `+` triggers
+  // "no exact matches in call to initializer" in iOS 16/17 toolchains.
   static let description = IntentDescription(
-    "Internal action used by DopaMenu's hosted Pause Shortcut. Reads a flag "
-    + "from the App Group and reports whether the current automation fire "
-    + "should be silenced. Users don't run this directly."
+    "Internal action used by DopaMenu's hosted Pause Shortcut. Reads a flag from the App Group and reports whether the current automation fire should be silenced. Users don't run this directly."
   )
 
   // CRITICAL: must be false. This is the entire mechanism that prevents
