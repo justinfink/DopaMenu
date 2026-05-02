@@ -124,6 +124,7 @@ function withAppUsageManifest(config) {
       'com.instagram.android', 'com.twitter.android', 'com.zhiliaoapp.musically',
       'com.facebook.katana', 'com.reddit.frontpage', 'com.snapchat.android',
       'com.google.android.youtube', 'com.netflix.mediaclient',
+      'com.ubercab', 'me.lyft.android', 'com.strava',
     ];
     for (const pkg of trackedPkgs) {
       if (!queries.package.some((p) => p.$?.['android:name'] === pkg)) {

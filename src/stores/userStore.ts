@@ -65,11 +65,15 @@ const defaultPreferences: UserPreferences = {
     { packageName: 'com.zhiliaoapp.musically', label: 'TikTok', enabled: true, iosBundleId: 'com.zhiliaoapp.musically' },
     { packageName: 'com.facebook.katana', label: 'Facebook', enabled: true, iosBundleId: 'com.facebook.Facebook' },
     { packageName: 'com.reddit.frontpage', label: 'Reddit', enabled: true, iosBundleId: 'com.reddit.Reddit' },
+    { packageName: 'com.ubercab', label: 'Uber', enabled: true, iosBundleId: 'com.ubercab.UberClient' },
+    { packageName: 'me.lyft.android', label: 'Lyft', enabled: true, iosBundleId: 'com.zimride.instant' },
   ],
   // Per-trigger pin map. Seeded with a Chess.com top pin for Instagram so new
   // users experience the feature out of the box. Users can edit/remove it.
   triggerPreferences: {
     'com.instagram.android': ['int-custom-chess-seed'],
+    'com.ubercab': ['int-custom-strava-seed'],
+    'me.lyft.android': ['int-custom-strava-seed'],
   },
   redirectApps: [],
   onboardingProgress: {

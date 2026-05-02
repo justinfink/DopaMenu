@@ -263,6 +263,27 @@ const PROBLEM_APPS: AppCatalogEntry[] = [
     webUrl: 'https://discord.com',
     iosAppStoreId: '985746746',
   },
+  // ── Rideshare — demo trigger for Strava redirect ────────────────────
+  {
+    id: 'uber',
+    label: 'Uber',
+    category: 'shopping',
+    role: 'problem',
+    iosBundleId: 'com.ubercab.UberClient',
+    androidPackage: 'com.ubercab',
+    webUrl: 'https://uber.com',
+    iosAppStoreId: '368677368',
+  },
+  {
+    id: 'lyft',
+    label: 'Lyft',
+    category: 'shopping',
+    role: 'problem',
+    iosBundleId: 'com.zimride.instant',
+    androidPackage: 'me.lyft.android',
+    webUrl: 'https://lyft.com',
+    iosAppStoreId: '529379082',
+  },
   // ── Newsfeed traps (still lookup-worthy, but feed scroll is the trap) ───
   // Categorized as 'problem' because the surface area people get sucked into
   // is the home/feed, not actual article reading. Flag both so users who

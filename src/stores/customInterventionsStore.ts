@@ -18,6 +18,8 @@ import {
 // for Instagram immediately after install.
 export const SEEDED_CHESS_ID = 'int-custom-chess-seed';
 
+export const SEEDED_STRAVA_ID = 'int-custom-strava-seed';
+
 // A neutral modality vector used for custom interventions by default.
 // Users can't currently set this via UI; the engine still ranks custom items
 // with this vector but trigger pins bypass ranking for the pinned slot, which
@@ -39,12 +41,25 @@ const SEEDED_CUSTOM: InterventionCandidate[] = [
     requiredEffort: 'low',
     contextConstraints: [],
     surface: 'on_phone',
-    // App-router launch: try the Chess.com native app first, fall back to web.
     launchAppPackage: 'com.chess',
     launchIosScheme: 'chesscom://',
     launchTarget: 'https://www.chess.com/puzzles',
     identityTags: ['learner'],
     icon: 'game-controller',
+  },
+  {
+    id: SEEDED_STRAVA_ID,
+    label: 'Take a walk or a jog instead',
+    description: 'Open Strava and start a run. Fresh air beats a fare.',
+    modality: NEUTRAL_MODALITY,
+    requiredEffort: 'low',
+    contextConstraints: [],
+    surface: 'on_phone',
+    launchAppPackage: 'com.strava',
+    launchIosScheme: 'strava://',
+    launchTarget: 'https://www.strava.com/record',
+    identityTags: ['active'],
+    icon: 'walk',
   },
 ];
 
