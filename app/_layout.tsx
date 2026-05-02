@@ -23,6 +23,13 @@ import {
 import { simulateSituation, generateIntervention } from '../src/engine/InterventionEngine';
 import { DEFAULT_INTERVENTIONS, getInterventionPool } from '../src/constants/interventions';
 import { colors } from '../src/constants/theme';
+import { registerWidgetTaskHandler } from 'react-native-android-widget';
+import { widgetTaskHandler } from '../src/widget/WidgetTaskHandler';
+import { refreshWidget } from '../src/widget/refreshWidget';
+
+if (Platform.OS === 'android') {
+  registerWidgetTaskHandler(widgetTaskHandler);
+}
 
 // Prevent splash screen from auto-hiding
 SplashScreen.preventAutoHideAsync();
@@ -188,13 +195,33 @@ export default function RootLayout() {
       showIntervention(decision, situation, undefined, undefined);
       router.push('/intervention');
     };
+    // Refresh the Android home screen widget whenever an outcome is recorded
+    // or user preferences change, so the widget stays in sync.
+    const unsubInterventionWidget = useInterventionStore.subscribe(
+      (state, prev) => {
+        if (state.lastInterventionTime !== prev.lastInterventionTime) {
+          void refreshWidget();
+        }
+      },
+    );
+    const unsubUserWidget = useUserStore.subscribe(
+      (state, prev) => {
+        if (state.user?.preferences !== prev.user?.preferences) {
+          void refreshWidget();
+        }
+      },
+    );
+
     // Run once at first launch in case the automation fired right before
     // we mounted.
     handleAutomationHandoff();
     const automationHandoffSub = AppState.addEventListener(
       'change',
       (state: AppStateStatus) => {
-        if (state === 'active') handleAutomationHandoff();
+        if (state === 'active') {
+          handleAutomationHandoff();
+          void refreshWidget();
+        }
       },
     );
 
@@ -424,6 +451,8 @@ export default function RootLayout() {
     });
 
     return () => {
+      unsubInterventionWidget();
+      unsubUserWidget();
       automationHandoffSub.remove();
       deepLinkSub.remove();
       if (appLaunchUnsubscribe.current) {

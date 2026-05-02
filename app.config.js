@@ -58,7 +58,7 @@ export default {
         backgroundColor: '#F8F6FA',
       },
       package: 'ai.dopamenu.app',
-      versionCode: 11,
+      versionCode: 12,
       permissions: [
         'android.permission.READ_CALENDAR',
         'android.permission.RECEIVE_BOOT_COMPLETED',
@@ -105,6 +105,27 @@ export default {
         {
           appGroup: 'group.ai.dopamenu.app',
           copyToTargetFolder: true,
+        },
+      ],
+      // Android home screen widget
+      [
+        'react-native-android-widget',
+        {
+          widgets: [
+            {
+              name: 'DopaMenuWidget',
+              label: 'DopaMenu',
+              description: 'Your live intervention menu',
+              minWidth: '250dp',
+              minHeight: '180dp',
+              maxResizeWidth: '400dp',
+              maxResizeHeight: '400dp',
+              resizeMode: 'horizontal|vertical',
+              targetCellWidth: 4,
+              targetCellHeight: 2,
+              updatePeriodMillis: 1800000,
+            },
+          ],
         },
       ],
     ],
