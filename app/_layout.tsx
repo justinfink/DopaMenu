@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
-import { AppState, AppStateStatus, Platform, Linking } from 'react-native';
+import { AppState, AppStateStatus, BackHandler, Platform, Linking } from 'react-native';
 import { Stack, router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
@@ -22,6 +22,7 @@ import {
 } from '../src/services/iosFamilyControls';
 import { simulateSituation, generateIntervention } from '../src/engine/InterventionEngine';
 import { DEFAULT_INTERVENTIONS, getInterventionPool } from '../src/constants/interventions';
+import { launchIntervention } from '../src/services/interventionLauncher';
 import { colors } from '../src/constants/theme';
 import { registerWidgetTaskHandler } from 'react-native-android-widget';
 import { widgetTaskHandler } from '../src/widget/WidgetTaskHandler';
@@ -261,6 +262,60 @@ export default function RootLayout() {
     // tapped, Shortcuts fires the "App is Opened" automation, or the user
     // taps "Take a pause" on the Apple Shield (opens via NSExtensionContext).
     const handleDeepLink = ({ url }: { url: string }) => {
+      // Home screen widget tap: dopamenu://widget-launch?id=<interventionId>
+      // Resolve the intervention from the merged candidate pool, then either
+      // launch its target app (and exit DopaMenu so we don't strand the user
+      // on our home screen) or — for off-phone activities like "Take 3 deep
+      // breaths" — show the intervention modal so they can act on it.
+      if (url.startsWith('dopamenu://widget-launch')) {
+        const queryIdx = url.indexOf('?');
+        if (queryIdx < 0) return;
+        const params = new URLSearchParams(url.substring(queryIdx + 1));
+        const id = params.get('id');
+        if (!id) return;
+        const pool = buildCandidatePool();
+        const intervention = pool.find((c) => c.id === id);
+        if (!intervention) {
+          // Intervention was deleted between widget-render and tap — open
+          // DopaMenu so the user can re-open or ignore.
+          router.replace('/(tabs)');
+          return;
+        }
+        analyticsService.track(AnalyticsEvents.INTERVENTION_SHOWN, {
+          trigger: 'widget',
+          interventionId: id,
+        });
+        const hasLaunchTarget =
+          !!intervention.launchAppPackage ||
+          !!intervention.launchIosScheme ||
+          !!intervention.launchTarget;
+        if (hasLaunchTarget) {
+          void launchIntervention(intervention).then((launched) => {
+            // The target app foregrounded — pop DopaMenu so the user lands
+            // there cleanly. Without this, hitting back from the target app
+            // would put them on DopaMenu's home screen instead of their
+            // home screen.
+            if (launched && Platform.OS === 'android') {
+              BackHandler.exitApp();
+            }
+          });
+          return;
+        }
+        // Off-phone activity (e.g. "Take 3 deep breaths"). Show the modal so
+        // the user can engage with the suggestion.
+        const situation = simulateSituation();
+        const decision = {
+          id: 'widget-' + id,
+          situationId: situation.id,
+          primary: intervention,
+          alternatives: [],
+          explanation: 'From your widget',
+          timestamp: Date.now(),
+        };
+        showIntervention(decision, situation);
+        router.push('/intervention');
+        return;
+      }
       if (url.startsWith('dopamenu://intervention')) {
         let triggerPackageName: string | undefined;
         let triggerLabel: string | undefined;

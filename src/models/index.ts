@@ -270,6 +270,12 @@ export interface InterventionCandidate {
   // universal link that the target app claims). Tried on iOS before falling
   // back to launchTarget.
   launchIosScheme?: string;
+  // Android-specific deep link URI inside the target app (e.g.
+  // "strava://activities/new"). When set, the launcher constructs an intent
+  // that opens the app directly to that screen instead of just the launcher
+  // activity. Falls back to launchAppPackage's main activity if the deep link
+  // doesn't resolve.
+  launchAndroidUri?: string;
   identityTags: string[];
   icon?: string;
 }

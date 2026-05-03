@@ -56,8 +56,12 @@ const SEEDED_CUSTOM: InterventionCandidate[] = [
     contextConstraints: [],
     surface: 'on_phone',
     launchAppPackage: 'com.strava',
-    launchIosScheme: 'strava://',
-    launchTarget: 'https://www.strava.com/record',
+    // Deep links into Strava's record-activity flow on both platforms when
+    // the app is installed. Falls through to the web fallback (Strava's
+    // homepage) if it isn't.
+    launchIosScheme: 'strava://activities/new',
+    launchAndroidUri: 'strava://activities/new',
+    launchTarget: 'https://www.strava.com',
     identityTags: ['active'],
     icon: 'walk',
   },
@@ -154,11 +158,30 @@ export const useCustomInterventionsStore = create<CustomInterventionsState>()(
     {
       name: 'dopamenu-custom-interventions-storage',
       storage: createJSONStorage(() => AsyncStorage),
-      // Ensure users who installed before the seed existed get it once.
+      // Ensure users who installed before the seed existed get it once,
+      // and migrate the seeded Strava entry's launch URLs in-place for users
+      // who were on a build with the broken https://www.strava.com/record link
+      // and the bare strava:// scheme that didn't deep-link to record-activity.
       onRehydrateStorage: () => (state) => {
-        if (state && !state.hasSeeded) {
+        if (!state) return;
+        if (!state.hasSeeded) {
           state.interventions = [...state.interventions, ...SEEDED_CUSTOM];
           state.hasSeeded = true;
+        }
+        // Idempotent migration: keep the seeded Strava and Chess entries' launch
+        // URLs in sync with whatever this build ships. If the user customized
+        // the label/description we leave those alone, but launch URLs are an
+        // implementation detail that should track the build.
+        for (const seed of SEEDED_CUSTOM) {
+          const existing = state.interventions.find((i) => i.id === seed.id);
+          if (!existing) {
+            state.interventions = [...state.interventions, seed];
+            continue;
+          }
+          existing.launchAppPackage = seed.launchAppPackage;
+          existing.launchIosScheme = seed.launchIosScheme;
+          existing.launchAndroidUri = seed.launchAndroidUri;
+          existing.launchTarget = seed.launchTarget;
         }
       },
     }

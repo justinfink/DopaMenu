@@ -30,6 +30,10 @@ import {
 import { APP_CATALOG, AppCatalogEntry, getPopularProblemApps } from '../src/constants/appCatalog';
 import { installedAppsService } from '../src/services/installedApps';
 import { colors, spacing, borderRadius, typography, shadows } from '../src/constants/theme';
+import {
+  buildAndroidIntentUrl,
+  launchIntervention,
+} from '../src/services/interventionLauncher';
 
 // How long to suppress re-intercepts on the trigger package after the user
 // dismisses/continues/accepts. Enough to cover the trigger app coming back
@@ -52,84 +56,8 @@ const ACCEPT_RATE_LIMIT_MS = 1000;
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
-// ============================================
-// Platform-aware launch
-// DopaMenu is fundamentally an app router — if an intervention points at a
-// native app, we try to open that app first, and only fall back to a web URL
-// if the app isn't installed.
-//
-// Android: uses intent:// URL with S.browser_fallback_url so the OS handles
-// "app installed? → open app. not installed? → open fallback URL" without us
-// needing to probe for the app.
-//
-// iOS: tries the URL scheme first via canOpenURL (requires LSApplicationQueriesSchemes
-// in Info.plist for schemes to be detectable — universal HTTPS links always
-// work), then falls back to launchTarget.
-// ============================================
-
-function buildAndroidIntentUrl(packageName: string, fallbackUrl?: string): string {
-  const parts = [`package=${packageName}`, 'end'];
-  // Most app launchers respond to a MAIN/LAUNCHER intent with just the package
-  // set. Including S.browser_fallback_url lets the OS route to the web if the
-  // app isn't installed.
-  const base = 'intent://#Intent;';
-  const fallback = fallbackUrl
-    ? `S.browser_fallback_url=${encodeURIComponent(fallbackUrl)};`
-    : '';
-  return `${base}${parts[0]};${fallback}${parts[1]}`;
-}
-
-async function launchIntervention(intervention: InterventionCandidate): Promise<boolean> {
-  const { launchAppPackage, launchIosScheme, launchTarget } = intervention;
-
-  // Nothing to launch — off-phone activity
-  if (!launchAppPackage && !launchIosScheme && !launchTarget) return false;
-
-  if (Platform.OS === 'android' && launchAppPackage) {
-    const intentUrl = buildAndroidIntentUrl(launchAppPackage, launchTarget);
-    try {
-      await Linking.openURL(intentUrl);
-      return true;
-    } catch {
-      // Fall through to web fallback below
-    }
-  }
-
-  if (Platform.OS === 'ios' && launchIosScheme) {
-    try {
-      const supported = await Linking.canOpenURL(launchIosScheme);
-      if (supported) {
-        await Linking.openURL(launchIosScheme);
-        return true;
-      }
-    } catch {
-      // Fall through to web fallback
-    }
-  }
-
-  if (launchTarget) {
-    try {
-      await Linking.openURL(launchTarget);
-      return true;
-    } catch {
-      // Fall through to store fallback
-    }
-  }
-
-  // Last resort on Android: if the user picked a redirect app they don't have
-  // installed yet, send them to the Play Store listing instead of failing
-  // silently. Better to land them somewhere actionable than nowhere.
-  if (Platform.OS === 'android' && launchAppPackage) {
-    try {
-      const playUrl = `https://play.google.com/store/apps/details?id=${launchAppPackage}`;
-      await Linking.openURL(playUrl);
-      return true;
-    } catch {
-      // Out of options.
-    }
-  }
-  return false;
-}
+// Launch logic lives in src/services/interventionLauncher so the home screen
+// widget's deep-link handler can reuse it for identical behavior.
 
 // When the intervention has no launch fields (e.g. "take 3 breaths") or the
 // user taps "continue what I was doing", we want to put them back where they
