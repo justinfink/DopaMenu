@@ -56,11 +56,15 @@ const SEEDED_CUSTOM: InterventionCandidate[] = [
     contextConstraints: [],
     surface: 'on_phone',
     launchAppPackage: 'com.strava',
-    // Deep links into Strava's record-activity flow on both platforms when
-    // the app is installed. Falls through to the web fallback (Strava's
-    // homepage) if it isn't.
-    launchIosScheme: 'strava://activities/new',
-    launchAndroidUri: 'strava://activities/new',
+    // strava://record opens the record-activity screen directly. This scheme
+    // was added by Strava as a side-effect for Android Wear support and is
+    // the documented entry point for external triggers — see
+    // https://groups.google.com/g/strava-api/c/Uywi_830YWE for the official
+    // discussion. Don't use strava://activities/new — Strava interprets that
+    // as "view the activity with id 'new'" and routes to the activity feed,
+    // which the user reads as an "outdated" version of the app.
+    launchIosScheme: 'strava://record',
+    launchAndroidUri: 'strava://record',
     launchTarget: 'https://www.strava.com',
     identityTags: ['active'],
     icon: 'walk',
