@@ -71,11 +71,13 @@ export default function RootLayout() {
       // Register for notifications
       await notificationService.registerForPushNotifications();
 
-      // Initialize analytics if enabled
-      if (currentUser.preferences.analyticsEnabled) {
-        await analyticsService.initialize({ enableAnalytics: true });
-        analyticsService.identify(currentUser.id);
-      }
+      // Initialize analytics — always on during testing; the service
+      // itself no-ops when the API key is missing.
+      await analyticsService.initialize({ enableAnalytics: true });
+      analyticsService.identify(currentUser.id);
+      analyticsService.track(AnalyticsEvents.APP_OPENED, {
+        platform: Platform.OS,
+      });
 
       // Schedule high-risk time reminders if enabled
       if (currentUser.preferences.highRiskRemindersEnabled) {

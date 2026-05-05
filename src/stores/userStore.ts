@@ -44,7 +44,7 @@ const defaultPreferences: UserPreferences = {
   excludedApps: [],
   tone: 'gentle',
   weeklyRecalibrationEnabled: true,
-  analyticsEnabled: false, // Opt-out by default for privacy
+  analyticsEnabled: true,
   // High-risk time notifications
   highRiskRemindersEnabled: true,
   highRiskTimes: [

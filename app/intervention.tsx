@@ -20,6 +20,7 @@ import { Button, Card, InterventionCard } from '../src/components';
 import { useInterventionStore } from '../src/stores/interventionStore';
 import { useUserStore } from '../src/stores/userStore';
 import { InterventionCandidate } from '../src/models';
+import { analyticsService, AnalyticsEvents } from '../src/services';
 import { appUsageService } from '../src/services/appUsage';
 import {
   suppressBlocking as suppressIosBlocking,
@@ -289,22 +290,33 @@ export default function InterventionScreen() {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     recordOutcome('accepted');
     const chosen = intervention ?? displayIntervention;
+    analyticsService.track(AnalyticsEvents.INTERVENTION_ACCEPTED, {
+      triggerApp: activeTriggerLabel || activeTriggerPackage || 'unknown',
+      chosenAlternative: chosen.label,
+      chosenId: chosen.id,
+      fromAlternativesList: showAlternatives,
+    });
     const launched = await launchIntervention(chosen);
-    // Accept never returns to the trigger app — the user chose an alternative.
     closeAndExit(launched);
   };
 
   const handleDismiss = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     recordOutcome('dismissed');
-    // Dismiss = "I aborted, leave me alone." Don't auto-open the trigger app —
-    // on iOS that would just re-trigger the Shield since no suppression ran.
+    analyticsService.track(AnalyticsEvents.INTERVENTION_DISMISSED, {
+      triggerApp: activeTriggerLabel || activeTriggerPackage || 'unknown',
+      primaryOffered: activeIntervention?.primary.label || 'unknown',
+    });
     closeAndExit(false);
   };
 
   const handleContinue = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     recordOutcome('continued_default');
+    analyticsService.track(AnalyticsEvents.INTERVENTION_CONTINUED, {
+      triggerApp: activeTriggerLabel || activeTriggerPackage || 'unknown',
+      primaryOffered: activeIntervention?.primary.label || 'unknown',
+    });
     // iOS: lift the Shield for the suppression window so the user's next tap
     // on the trigger app goes through. The DeviceActivityMonitor extension
     // re-arms the shield autonomously after cumulative usage crosses the
@@ -363,6 +375,11 @@ export default function InterventionScreen() {
   const handleContinueToApp = async (entry: AppCatalogEntry) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     recordOutcome('continued_default');
+    analyticsService.track(AnalyticsEvents.INTERVENTION_CONTINUED, {
+      triggerApp: entry.label,
+      primaryOffered: activeIntervention?.primary.label || 'unknown',
+      pickedFromChipRow: true,
+    });
     if (Platform.OS === 'ios') {
       try {
         // No tokenHash because the Shield never fired in the tap-free path —
@@ -507,6 +524,10 @@ export default function InterventionScreen() {
                     style={styles.alternativesLink}
                     onPress={() => {
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      analyticsService.track(AnalyticsEvents.ALTERNATIVES_VIEWED, {
+                        triggerApp: activeTriggerLabel || activeTriggerPackage || 'unknown',
+                        alternativeCount: activeIntervention.alternatives.length,
+                      });
                       setShowAlternatives(true);
                     }}
                   >
