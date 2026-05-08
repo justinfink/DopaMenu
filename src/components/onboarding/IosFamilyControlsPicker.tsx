@@ -281,6 +281,21 @@ export default function IosFamilyControlsPicker({
 
   return (
     <View style={styles.container}>
+      {/* Vertical ScrollView wraps EVERYTHING the user is asked to interact
+          with on this screen. Without this, iPhones smaller than the iPhone
+          14 Pro Max push the "Pick the apps" / "Change selection" button
+          below the fold and the user can't reach it — onboarding step 1 of 3
+          becomes a dead end on iPhone XR / SE / mini. The horizontal
+          ScrollView nested inside (offPhone install-chip carousel) is
+          orthogonal so the gestures don't conflict. AppPicker (used on iOS
+          15 + Android) already has its own internal ScrollView, so this
+          wrapper only matters on the iOS 16+ branch. */}
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingBottom: spacing.xl }}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
       <Text style={styles.title}>{title}</Text>
       <Text style={styles.subtitle}>{subtitle}</Text>
 
@@ -485,6 +500,7 @@ export default function IosFamilyControlsPicker({
           ) : null}
         </View>
       )}
+      </ScrollView>
 
       {pickerOpen ? (
         <DeviceActivitySelectionSheetViewPersisted
