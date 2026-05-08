@@ -2,7 +2,7 @@ import React from 'react';
 import { Platform } from 'react-native';
 import { requestWidgetUpdate } from 'react-native-android-widget';
 import { DopaMenuWidget } from './DopaMenuWidget';
-import { getWidgetMenuData } from './widgetDataService';
+import { getLiveMenuData } from './liveMenuService';
 
 export async function refreshWidget(): Promise<void> {
   if (Platform.OS !== 'android') return;
@@ -10,7 +10,7 @@ export async function refreshWidget(): Promise<void> {
     await requestWidgetUpdate({
       widgetName: 'DopaMenuWidget',
       renderWidget: async () => {
-        const data = await getWidgetMenuData();
+        const data = await getLiveMenuData();
         return <DopaMenuWidget data={data} />;
       },
     });

@@ -31,6 +31,12 @@ interface UserState {
   clearTriggerPins: (packageName: string) => void;
   addQuietHours: (start: string, end: string) => void;
   removeQuietHours: (index: number) => void;
+  removeQuietHoursById: (id: string) => void;
+  updateQuietHourAt: (id: string, range: { start: string; end: string }) => void;
+  setMonitoringWindow: (
+    packageName: string,
+    window: import('../models').MonitoringWindow | null,
+  ) => void;
   addExcludedApp: (appId: string) => void;
   removeExcludedApp: (appId: string) => void;
   reset: () => void;
@@ -40,7 +46,9 @@ const generateId = () => Math.random().toString(36).substring(2, 11);
 
 const defaultPreferences: UserPreferences = {
   interventionFrequency: 'medium',
-  quietHours: [{ start: '22:00', end: '07:00' }],
+  // Stable id seeded so the home-page editor can target this default range
+  // before the user adds any of their own.
+  quietHours: [{ id: 'qh-default', start: '22:00', end: '07:00' }],
   excludedApps: [],
   tone: 'gentle',
   weeklyRecalibrationEnabled: true,
@@ -130,11 +138,23 @@ export const useUserStore = create<UserState>()(
               restrictedUnlockVisited: false,
             };
 
+          // Migration: stamp stable ids onto any quietHours entry persisted
+          // before the field existed. Editors target ranges by id rather than
+          // index so adds/deletes don't cause edit-the-wrong-row bugs.
+          const needsQuietHourIds =
+            existing.preferences.quietHours.some((q) => !q.id);
+          const migratedQuietHours = needsQuietHourIds
+            ? existing.preferences.quietHours.map((q) =>
+                q.id ? q : { ...q, id: generateId() },
+              )
+            : existing.preferences.quietHours;
+
           if (
             newApps.length > 0 ||
             !hasTriggerPrefs ||
             needsIosBackfill ||
-            !hasOnboardingProgress
+            !hasOnboardingProgress ||
+            needsQuietHourIds
           ) {
             set({
               user: {
@@ -144,6 +164,7 @@ export const useUserStore = create<UserState>()(
                   trackedApps: [...mergedExistingApps, ...newApps],
                   triggerPreferences: nextTriggerPrefs,
                   onboardingProgress: nextOnboardingProgress,
+                  quietHours: migratedQuietHours,
                 },
               },
               isLoading: false,
@@ -347,7 +368,7 @@ export const useUserStore = create<UserState>()(
                 ...state.user.preferences,
                 quietHours: [
                   ...state.user.preferences.quietHours,
-                  { start, end },
+                  { id: generateId(), start, end },
                 ],
               },
             },
@@ -368,6 +389,65 @@ export const useUserStore = create<UserState>()(
               preferences: {
                 ...state.user.preferences,
                 quietHours,
+              },
+            },
+          };
+        });
+      },
+
+      removeQuietHoursById: (id) => {
+        set((state) => {
+          if (!state.user) return state;
+          return {
+            user: {
+              ...state.user,
+              preferences: {
+                ...state.user.preferences,
+                quietHours: state.user.preferences.quietHours.filter(
+                  (q) => q.id !== id,
+                ),
+              },
+            },
+          };
+        });
+      },
+
+      updateQuietHourAt: (id, range) => {
+        set((state) => {
+          if (!state.user) return state;
+          return {
+            user: {
+              ...state.user,
+              preferences: {
+                ...state.user.preferences,
+                quietHours: state.user.preferences.quietHours.map((q) =>
+                  q.id === id ? { ...q, start: range.start, end: range.end } : q,
+                ),
+              },
+            },
+          };
+        });
+      },
+
+      // Set or clear the monitoring window for a tracked app. Updates only
+      // the userStore copy; callers are responsible for pushing the new
+      // map to the native side via appUsageService.setMonitoringWindows().
+      setMonitoringWindow: (packageName, window) => {
+        set((state) => {
+          if (!state.user) return state;
+          const updated = state.user.preferences.trackedApps.map((a) => {
+            if (a.packageName !== packageName) return a;
+            if (window) return { ...a, monitoringWindow: window };
+            const copy = { ...a };
+            delete copy.monitoringWindow;
+            return copy;
+          });
+          return {
+            user: {
+              ...state.user,
+              preferences: {
+                ...state.user.preferences,
+                trackedApps: updated,
               },
             },
           };

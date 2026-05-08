@@ -1,4 +1,6 @@
 import { Platform, NativeModules, NativeEventEmitter, Linking } from 'react-native';
+import { TrackedAppConfig, MonitoringWindow, TimeRange } from '../models';
+import { toMinutes } from '../utils/time';
 
 // ============================================
 // App Usage Service
@@ -51,6 +53,22 @@ interface AppUsageModule {
   getDeviceProfile(): Promise<DeviceProfile>;
   suppressIntercept(packageName: string, durationMs: number): Promise<void>;
   setModalActive(active: boolean): Promise<void>;
+  setMonitoringWindows(
+    windows: Record<string, NativeMonitoringWindow>,
+  ): Promise<void>;
+  setQuietHours(ranges: NativeQuietHourRange[]): Promise<void>;
+}
+
+// The native side expects minutes-from-midnight, not HH:mm strings.
+interface NativeMonitoringWindow {
+  startMinutes: number;
+  endMinutes: number;
+  daysOfWeek?: number[];
+}
+
+interface NativeQuietHourRange {
+  startMinutes: number;
+  endMinutes: number;
 }
 
 export interface DeviceProfile {
@@ -75,6 +93,45 @@ export type OnboardingWatchTarget =
 const NativeAppUsage: AppUsageModule | null = Platform.OS === 'android'
   ? NativeModules.DopaMenuAppUsage
   : null;
+
+// Translate a tracked-app list into the {package: {startMinutes, endMinutes,
+// daysOfWeek?}} shape the native side wants. Apps without a monitoringWindow
+// are omitted (no entry = no restriction).
+export function deriveMonitoringWindows(
+  apps: Array<{ packageName: string; monitoringWindow?: MonitoringWindow }>,
+): Record<string, NativeMonitoringWindow> {
+  const out: Record<string, NativeMonitoringWindow> = {};
+  for (const app of apps) {
+    const w = app.monitoringWindow;
+    if (!w) continue;
+    const start = toMinutes(w.start);
+    const end = toMinutes(w.end);
+    if (start == null || end == null) continue;
+    out[app.packageName] = {
+      startMinutes: start,
+      endMinutes: end,
+      ...(w.daysOfWeek && w.daysOfWeek.length > 0
+        ? { daysOfWeek: w.daysOfWeek }
+        : {}),
+    };
+  }
+  return out;
+}
+
+// Translate user.preferences.quietHours into the minutes-based shape the
+// native gate consumes. Invalid HH:mm strings are dropped silently.
+export function deriveQuietHourRanges(
+  ranges: TimeRange[],
+): NativeQuietHourRange[] {
+  const out: NativeQuietHourRange[] = [];
+  for (const r of ranges) {
+    const start = toMinutes(r.start);
+    const end = toMinutes(r.end);
+    if (start == null || end == null) continue;
+    out.push({ startMinutes: start, endMinutes: end });
+  }
+  return out;
+}
 
 // Event emitter for app launch events (Android)
 let appLaunchEmitter: NativeEventEmitter | null = null;
@@ -169,9 +226,11 @@ export const appUsageService = {
 
   /**
    * Start monitoring for app launches (Android only)
-   * This runs a background service that checks for app launches
+   * This runs a background service that checks for app launches.
+   * If any tracked app has a monitoringWindow set, also pushes the window
+   * map to the native side so the dispatch chokepoint can gate on it.
    */
-  async startMonitoring(trackedApps: TrackedApp[]): Promise<boolean> {
+  async startMonitoring(trackedApps: TrackedApp[] | TrackedAppConfig[]): Promise<boolean> {
     if (!this.isSupported() || !NativeAppUsage) {
       console.log('[AppUsage] Monitoring not supported on this platform');
       return false;
@@ -184,13 +243,47 @@ export const appUsageService = {
     }
 
     try {
-      const packageNames = trackedApps.map(app => app.packageName);
+      const packageNames = trackedApps.map((app) => app.packageName);
       await NativeAppUsage.startMonitoring(packageNames);
       console.log('[AppUsage] Started monitoring', packageNames.length, 'apps');
+      // Push the latest window map alongside the package list so the gate
+      // matches what JS just sent. Empty map = no restrictions.
+      await this.setMonitoringWindows(deriveMonitoringWindows(trackedApps));
       return true;
     } catch (error) {
       console.error('[AppUsage] Failed to start monitoring:', error);
       return false;
+    }
+  },
+
+  /**
+   * Push the per-package time-of-day windows to the native dispatch gate.
+   * Called whenever the user edits a tracked app's monitoring window.
+   * Map values are minutes-from-midnight (0..1439); empty map clears gates.
+   */
+  async setMonitoringWindows(
+    windows: Record<string, NativeMonitoringWindow>,
+  ): Promise<void> {
+    if (!this.isSupported() || !NativeAppUsage?.setMonitoringWindows) return;
+    try {
+      await NativeAppUsage.setMonitoringWindows(windows);
+    } catch (error) {
+      console.error('[AppUsage] setMonitoringWindows failed:', error);
+    }
+  },
+
+  /**
+   * Push the user's quiet-hour ranges to the native dispatch gate. While now()
+   * falls inside any range, EVERY intervention path (Accessibility-driven
+   * overlay, FGS-poll notification, FGS-poll direct activity launch) silently
+   * drops. JS owns the source of truth — replace the full list on every change.
+   */
+  async setQuietHours(ranges: NativeQuietHourRange[]): Promise<void> {
+    if (!this.isSupported() || !NativeAppUsage?.setQuietHours) return;
+    try {
+      await NativeAppUsage.setQuietHours(ranges);
+    } catch (error) {
+      console.error('[AppUsage] setQuietHours failed:', error);
     }
   },
 

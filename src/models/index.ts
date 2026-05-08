@@ -47,6 +47,17 @@ export interface TrackedAppConfig {
   // True once setup automation fires at least once (auto-detected via deep link).
   // Kept for iOS Shortcuts path; Android doesn't need this.
   iosShortcutConfigured?: boolean;
+  // Optional time-of-day (and optional day-of-week) window during which this
+  // app is monitored. When unset → always monitored. Android-only enforcement
+  // — the gate lives in the native shouldDispatchIntervention() chokepoint.
+  monitoringWindow?: MonitoringWindow;
+}
+
+export interface MonitoringWindow {
+  start: string; // HH:mm
+  end: string;   // HH:mm — overnight ranges (start > end) treated as cross-midnight
+  // 1=Mon..7=Sun. When omitted, every day applies.
+  daysOfWeek?: number[];
 }
 
 export interface RedirectAppConfig {
@@ -119,6 +130,10 @@ export interface UserPreferences {
 export interface TimeRange {
   start: string; // HH:mm format
   end: string;
+  // Stable id assigned on rehydrate — lets editors target a specific range
+  // even when adds/deletes shift array indices. Optional because pre-migration
+  // persisted users won't have it until userStore backfills on rehydrate.
+  id?: string;
 }
 
 // ============================================
@@ -330,6 +345,30 @@ export interface DailyPortfolio {
   categories: PortfolioCategory[];
   goodDayRating?: number; // 1-5, optional
   notes?: string;
+}
+
+// ============================================
+// Off-Phone Chores
+// ============================================
+
+export type ChoreCadence = 'once' | 'daily' | 'weekly' | 'custom';
+
+export interface Chore {
+  id: string;
+  label: string;
+  notes?: string;
+  cadence: ChoreCadence;
+  // 1=Mon..7=Sun. Used by 'weekly' (one day) and 'custom' (multiple days).
+  // Ignored for 'daily' and 'once'.
+  daysOfWeek?: number[];
+  // Used by 'once' chores only — tracks whether the user has checked it off
+  // for good. Recurring chores use completionsByDate instead so each day
+  // gets its own check-off without losing history.
+  completed?: boolean;
+  // Completion log for recurring chores. Key is a YYYY-MM-DD date in the
+  // device's local timezone (matches portfolioStore's date keying).
+  completionsByDate: Record<string, boolean>;
+  createdAt: number;
 }
 
 // ============================================

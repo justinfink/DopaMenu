@@ -322,7 +322,10 @@ export default function SettingsScreen() {
     if (newValue) {
       // Schedule reminders when enabled
       const enabledTimes = user.preferences.highRiskTimes.filter(t => t.enabled);
-      await notificationService.scheduleAllHighRiskReminders(enabledTimes);
+      await notificationService.scheduleAllHighRiskReminders(
+        enabledTimes,
+        user.preferences.quietHours,
+      );
     } else {
       // Cancel reminders when disabled
       await notificationService.cancelHighRiskReminders();
@@ -339,7 +342,10 @@ export default function SettingsScreen() {
     // Reschedule if reminders are enabled
     if (user.preferences.highRiskRemindersEnabled) {
       const enabledTimes = updatedTimes.filter(t => t.enabled);
-      await notificationService.scheduleAllHighRiskReminders(enabledTimes);
+      await notificationService.scheduleAllHighRiskReminders(
+        enabledTimes,
+        user.preferences.quietHours,
+      );
     }
   };
 

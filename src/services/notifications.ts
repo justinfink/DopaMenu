@@ -1,6 +1,7 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
-import { InterventionDecision } from '../models';
+import { InterventionDecision, TimeRange } from '../models';
+import { isTimeInRange } from '../utils/time';
 
 // ============================================
 // Notifications Service
@@ -63,6 +64,18 @@ const HIGH_RISK_MESSAGES = [
   { title: 'Gentle nudge', body: 'This is a vulnerable moment. Take 3 breaths before deciding.' },
   { title: 'Awareness bell', body: 'Feeling the pull? You have other options.' },
 ];
+
+// True if the reminder's HH:mm trigger falls inside any quiet range. Quiet
+// ranges are global (no per-day variant in the current model), so a single
+// HH:mm test is sufficient — if the time is quiet on one day, it's quiet on
+// every day, so we drop the entire reminder.
+function fallsInQuietHours(hrt: HighRiskTime, quietHours: TimeRange[]): boolean {
+  if (quietHours.length === 0) return false;
+  const time = `${hrt.hour.toString().padStart(2, '0')}:${hrt.minute
+    .toString()
+    .padStart(2, '0')}`;
+  return quietHours.some((q) => isTimeInRange(time, q.start, q.end));
+}
 
 // Configure notification behavior
 Notifications.setNotificationHandler({
@@ -186,19 +199,31 @@ export const notificationService = {
   },
 
   /**
-   * Schedule all high-risk time reminders
+   * Schedule all high-risk time reminders. Skips any reminder whose firing
+   * time falls inside any of the user's quiet-hour ranges so quiet hours
+   * actually mean "no notifications" — not just "no app intercepts." The
+   * caller should re-invoke this whenever quietHours change so the schedule
+   * stays in sync (the userStore subscription in app/_layout.tsx does that).
    */
-  async scheduleAllHighRiskReminders(highRiskTimes: HighRiskTime[]): Promise<Map<string, string[]>> {
+  async scheduleAllHighRiskReminders(
+    highRiskTimes: HighRiskTime[],
+    quietHours: TimeRange[] = [],
+  ): Promise<Map<string, string[]>> {
     const scheduledIds = new Map<string, string[]>();
 
     // Cancel existing high-risk reminders first
     await this.cancelHighRiskReminders();
 
     for (const hrt of highRiskTimes) {
-      if (hrt.enabled) {
-        const ids = await this.scheduleHighRiskReminder(hrt);
-        scheduledIds.set(hrt.id, ids);
+      if (!hrt.enabled) continue;
+      if (fallsInQuietHours(hrt, quietHours)) {
+        console.log(
+          `[Notifications] Skipping ${hrt.id} (${hrt.hour}:${hrt.minute}) — falls inside quiet hours`,
+        );
+        continue;
       }
+      const ids = await this.scheduleHighRiskReminder(hrt);
+      scheduledIds.set(hrt.id, ids);
     }
 
     console.log(`[Notifications] Scheduled ${scheduledIds.size} high-risk time reminder groups`);

@@ -1,11 +1,11 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback } from 'react';
 import { router } from 'expo-router';
 import { useUserStore } from '../stores/userStore';
 import { useInterventionStore } from '../stores/interventionStore';
-import { useCustomInterventionsStore } from '../stores/customInterventionsStore';
 import { generateIntervention, simulateSituation } from '../engine/InterventionEngine';
-import { DEFAULT_INTERVENTIONS, getInterventionPool } from '../constants/interventions';
+import { buildCandidatePool } from '../services/interventionResolver';
 import { Situation, InterventionDecision } from '../models';
+import { isTimeInRange } from '../utils/time';
 
 // ============================================
 // useIntervention Hook
@@ -58,16 +58,9 @@ export function useIntervention(): UseInterventionReturn {
       // Check confidence threshold
       if (sit.confidence < 0.5) return;
 
-      // Build merged candidate pool (built-in + user custom) so custom items are
-      // eligible even for manual/urge-button triggers.
-      const candidatePool = [
-        ...getInterventionPool(user),
-        ...useCustomInterventionsStore.getState().interventions,
-      ];
-
       // Generate intervention decision (no trigger package for manual urge —
       // fall back to standard ranking).
-      const decision = generateIntervention(sit, user, candidatePool);
+      const decision = generateIntervention(sit, user, buildCandidatePool(user));
 
       // Show intervention
       showIntervention(decision, sit);
@@ -88,22 +81,8 @@ export function useIntervention(): UseInterventionReturn {
   };
 }
 
-// Helper function to check if time is in range
-function isTimeInRange(time: string, start: string, end: string): boolean {
-  const [timeH, timeM] = time.split(':').map(Number);
-  const [startH, startM] = start.split(':').map(Number);
-  const [endH, endM] = end.split(':').map(Number);
-
-  const timeMinutes = timeH * 60 + timeM;
-  const startMinutes = startH * 60 + startM;
-  const endMinutes = endH * 60 + endM;
-
-  // Handle overnight ranges (e.g., 22:00 - 07:00)
-  if (startMinutes > endMinutes) {
-    return timeMinutes >= startMinutes || timeMinutes <= endMinutes;
-  }
-
-  return timeMinutes >= startMinutes && timeMinutes <= endMinutes;
-}
+// Re-export so existing call sites that import from this module continue to
+// work. New code should import from '../utils/time' directly.
+export { isTimeInRange };
 
 export default useIntervention;

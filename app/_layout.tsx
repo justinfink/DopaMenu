@@ -1,13 +1,13 @@
 import { useEffect, useState, useRef } from 'react';
-import { AppState, AppStateStatus, BackHandler, Platform, Linking } from 'react-native';
+import { AppState, AppStateStatus, Platform, Linking } from 'react-native';
 import { Stack, router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import * as Notifications from 'expo-notifications';
 import { useUserStore } from '../src/stores/userStore';
 import { useInterventionStore } from '../src/stores/interventionStore';
-import { useCustomInterventionsStore } from '../src/stores/customInterventionsStore';
 import { notificationService, analyticsService, AnalyticsEvents, appUsageService } from '../src/services';
+import { deriveQuietHourRanges } from '../src/services/appUsage';
 import {
   clearAutomationBounceIfExpired,
   consumeAutomationHandoff,
@@ -21,8 +21,7 @@ import {
   ensureShieldArmedIfWindowExpired,
 } from '../src/services/iosFamilyControls';
 import { simulateSituation, generateIntervention } from '../src/engine/InterventionEngine';
-import { DEFAULT_INTERVENTIONS, getInterventionPool } from '../src/constants/interventions';
-import { launchIntervention } from '../src/services/interventionLauncher';
+import { buildCandidatePool, launchOrShow } from '../src/services/interventionResolver';
 import { colors } from '../src/constants/theme';
 import { registerWidgetTaskHandler } from 'react-native-android-widget';
 import { widgetTaskHandler } from '../src/widget/WidgetTaskHandler';
@@ -79,11 +78,16 @@ export default function RootLayout() {
         platform: Platform.OS,
       });
 
-      // Schedule high-risk time reminders if enabled
+      // Schedule high-risk time reminders if enabled. Pass quietHours so any
+      // reminder that falls inside a quiet range is dropped from the schedule
+      // (the userStore subscription below re-runs this on quiet-hour edits).
       if (currentUser.preferences.highRiskRemindersEnabled) {
         const enabledTimes = currentUser.preferences.highRiskTimes.filter(t => t.enabled);
         if (enabledTimes.length > 0) {
-          await notificationService.scheduleAllHighRiskReminders(enabledTimes);
+          await notificationService.scheduleAllHighRiskReminders(
+            enabledTimes,
+            currentUser.preferences.quietHours,
+          );
         }
       }
 
@@ -93,6 +97,18 @@ export default function RootLayout() {
         if (enabledApps.length > 0) {
           await appUsageService.startMonitoring(enabledApps);
         }
+      }
+
+      // Push quiet-hour ranges to the native dispatch gate on every boot so
+      // the AccessibilityService and FGS poller silently drop intercepts
+      // during user-configured quiet windows. Runs unconditionally on Android
+      // — the native side just consults an empty list when there's nothing
+      // to suppress, and pushing now means the gate is ready the moment the
+      // user later toggles monitoring on.
+      if (Platform.OS === 'android') {
+        await appUsageService.setQuietHours(
+          deriveQuietHourRanges(currentUser.preferences.quietHours),
+        );
       }
 
       // iOS: re-arm the Shield on every app start so it survives reboots,
@@ -117,11 +133,10 @@ export default function RootLayout() {
 
     setupServices();
 
-    // Build the merged candidate pool once per effect run: built-in + user custom
-    const buildCandidatePool = () => [
-      ...getInterventionPool(currentUser),
-      ...useCustomInterventionsStore.getState().interventions,
-    ];
+    // Bind the merged candidate pool to the current user. The resolver pulls
+    // custom interventions from its own store reference each call, so this
+    // stays in sync as the user adds/edits.
+    const buildPool = () => buildCandidatePool(currentUser);
 
     // ─── iOS tap-free mode handoff ────────────────────────────────────────
     // When the user has set up the Personal Automation that runs our
@@ -193,7 +208,7 @@ export default function RootLayout() {
       const decision = generateIntervention(
         situation,
         currentUser,
-        buildCandidatePool(),
+        buildPool(),
       );
       showIntervention(decision, situation, undefined, undefined);
       router.push('/intervention');
@@ -211,6 +226,32 @@ export default function RootLayout() {
       (state, prev) => {
         if (state.user?.preferences !== prev.user?.preferences) {
           void refreshWidget();
+          // Keep the native quiet-hours gate AND the high-risk reminder
+          // schedule in lockstep with the store so edits in the home page's
+          // QuietHoursEditor take effect on the very next intercept attempt
+          // and the next scheduled reminder — no app restart, no second tap.
+          const quietChanged =
+            state.user?.preferences.quietHours !==
+            prev.user?.preferences.quietHours;
+          if (quietChanged) {
+            if (Platform.OS === 'android') {
+              void appUsageService.setQuietHours(
+                deriveQuietHourRanges(state.user?.preferences.quietHours ?? []),
+              );
+            }
+            // Re-schedule reminders so any newly-quiet time is dropped and
+            // any newly-unquiet time is restored. Only when the user has
+            // reminders enabled — otherwise leave the cancelled state alone.
+            if (state.user?.preferences.highRiskRemindersEnabled) {
+              const enabledTimes = state.user.preferences.highRiskTimes.filter(
+                (t) => t.enabled,
+              );
+              void notificationService.scheduleAllHighRiskReminders(
+                enabledTimes,
+                state.user.preferences.quietHours,
+              );
+            }
+          }
         }
       },
     );
@@ -247,7 +288,7 @@ export default function RootLayout() {
         const decision = generateIntervention(
           situation,
           currentUser,
-          buildCandidatePool(),
+          buildPool(),
           { triggerPackageName: event.packageName }
         );
         showIntervention(decision, situation, event.packageName);
@@ -275,7 +316,7 @@ export default function RootLayout() {
         const params = new URLSearchParams(url.substring(queryIdx + 1));
         const id = params.get('id');
         if (!id) return;
-        const pool = buildCandidatePool();
+        const pool = buildPool();
         const intervention = pool.find((c) => c.id === id);
         if (!intervention) {
           // Intervention was deleted between widget-render and tap — open
@@ -287,35 +328,12 @@ export default function RootLayout() {
           trigger: 'widget',
           interventionId: id,
         });
-        const hasLaunchTarget =
-          !!intervention.launchAppPackage ||
-          !!intervention.launchIosScheme ||
-          !!intervention.launchTarget;
-        if (hasLaunchTarget) {
-          void launchIntervention(intervention).then((launched) => {
-            // The target app foregrounded — pop DopaMenu so the user lands
-            // there cleanly. Without this, hitting back from the target app
-            // would put them on DopaMenu's home screen instead of their
-            // home screen.
-            if (launched && Platform.OS === 'android') {
-              BackHandler.exitApp();
-            }
-          });
-          return;
-        }
-        // Off-phone activity (e.g. "Take 3 deep breaths"). Show the modal so
-        // the user can engage with the suggestion.
-        const situation = simulateSituation();
-        const decision = {
-          id: 'widget-' + id,
-          situationId: situation.id,
-          primary: intervention,
-          alternatives: [],
-          explanation: 'From your widget',
-          timestamp: Date.now(),
-        };
-        showIntervention(decision, situation);
-        router.push('/intervention');
+        // Widget taps exit DopaMenu after launch so the user lands cleanly
+        // on the trigger app instead of stranded on our home screen.
+        void launchOrShow(intervention, {
+          exitAfterLaunch: true,
+          source: 'widget',
+        });
         return;
       }
       if (url.startsWith('dopamenu://intervention')) {
@@ -439,7 +457,7 @@ export default function RootLayout() {
         const decision = generateIntervention(
           situation,
           currentUser,
-          buildCandidatePool(),
+          buildPool(),
           { triggerPackageName }
         );
         showIntervention(decision, situation, triggerPackageName, triggerLabel);
@@ -493,7 +511,7 @@ export default function RootLayout() {
         const decision = generateIntervention(
           situation,
           currentUser,
-          buildCandidatePool(),
+          buildPool(),
           { triggerPackageName }
         );
         showIntervention(decision, situation, triggerPackageName, triggerLabel);

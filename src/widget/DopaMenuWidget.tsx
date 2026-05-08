@@ -2,7 +2,7 @@ import React from 'react';
 import { FlexWidget, TextWidget } from 'react-native-android-widget';
 import type { InterventionCandidate } from '../models';
 import { getWidgetIcon, getTimeBucketLabel, EFFORT_LABELS } from './iconMap';
-import type { WidgetMenuData } from './widgetDataService';
+import type { LiveMenuData } from './liveMenuService';
 
 // Brand tokens — kept hard-coded here because the headless task runs in a
 // fresh JS environment without the constants/theme module being guaranteed to
@@ -14,14 +14,15 @@ const COLOR_PRIMARY_FADED = '#E8E0F0';
 const COLOR_TEXT_PRIMARY = '#2D2D3A';
 const COLOR_TEXT_SECONDARY = '#6B6B7B';
 const COLOR_TEXT_TERTIARY = '#9B9BAB';
-const COLOR_BORDER = '#E8E5EB';
+const COLOR_BORDER_SOFT = '#EFEBF3';
+const COLOR_ALT_BG = '#FBF9FC';
 
 interface DopaMenuWidgetProps {
-  data: WidgetMenuData | null;
+  data: LiveMenuData | null;
 }
 
 // All widget clicks route through this deep link so DopaMenu can resolve the
-// intervention and use its shared launchIntervention() logic with the full
+// intervention and use its shared launchOrShow() logic with the full
 // intent/web/Play Store fallback chain. Avoids the OPEN_URI library bug where
 // raw intent:// URIs don't resolve through Uri.parse + ACTION_VIEW.
 function widgetLaunchUri(id: string, source: 'item' | 'header' = 'item'): string {
@@ -43,12 +44,12 @@ function InterventionRow({
       style={{
         flexDirection: 'row',
         alignItems: 'center',
-        backgroundColor: isPrimary ? COLOR_PRIMARY_FADED : COLOR_SURFACE,
-        borderRadius: 14,
-        borderWidth: 1,
-        borderColor: isPrimary ? COLOR_PRIMARY : COLOR_BORDER,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
+        backgroundColor: isPrimary ? COLOR_PRIMARY_FADED : COLOR_ALT_BG,
+        borderRadius: 16,
+        borderWidth: isPrimary ? 1 : 0,
+        borderColor: isPrimary ? COLOR_PRIMARY : COLOR_BORDER_SOFT,
+        paddingHorizontal: 14,
+        paddingVertical: 12,
         width: 'match_parent',
       }}
       clickAction="OPEN_URI"
@@ -56,16 +57,16 @@ function InterventionRow({
     >
       <FlexWidget
         style={{
-          width: 36,
-          height: 36,
-          borderRadius: 10,
-          backgroundColor: COLOR_BG,
+          width: isPrimary ? 40 : 36,
+          height: isPrimary ? 40 : 36,
+          borderRadius: 12,
+          backgroundColor: isPrimary ? COLOR_SURFACE : COLOR_BG,
           alignItems: 'center',
           justifyContent: 'center',
-          marginRight: 10,
+          marginRight: 12,
         }}
       >
-        <TextWidget text={icon} style={{ fontSize: isPrimary ? 20 : 18 }} />
+        <TextWidget text={icon} style={{ fontSize: isPrimary ? 22 : 18 }} />
       </FlexWidget>
       <FlexWidget style={{ flex: 1, flexDirection: 'column' }}>
         <TextWidget
@@ -73,8 +74,8 @@ function InterventionRow({
           maxLines={1}
           truncate="END"
           style={{
-            fontSize: isPrimary ? 14 : 13,
-            fontWeight: isPrimary ? '600' : '500',
+            fontSize: isPrimary ? 15 : 13,
+            fontWeight: isPrimary ? '700' : '600',
             color: COLOR_TEXT_PRIMARY,
           }}
         />
@@ -84,11 +85,20 @@ function InterventionRow({
           truncate="END"
           style={{
             fontSize: 11,
-            color: COLOR_TEXT_TERTIARY,
+            color: isPrimary ? COLOR_TEXT_SECONDARY : COLOR_TEXT_TERTIARY,
             marginTop: 2,
           }}
         />
       </FlexWidget>
+      <TextWidget
+        text="›"
+        style={{
+          fontSize: 18,
+          color: isPrimary ? COLOR_PRIMARY : COLOR_TEXT_TERTIARY,
+          marginLeft: 8,
+          fontWeight: '600',
+        }}
+      />
     </FlexWidget>
   );
 }
@@ -127,8 +137,8 @@ export function DopaMenuWidget({ data }: DopaMenuWidgetProps) {
         flex: 1,
         flexDirection: 'column',
         backgroundColor: COLOR_BG,
-        borderRadius: 20,
-        padding: 12,
+        borderRadius: 22,
+        padding: 14,
         width: 'match_parent',
         height: 'match_parent',
       }}
@@ -140,12 +150,14 @@ export function DopaMenuWidget({ data }: DopaMenuWidgetProps) {
           flexDirection: 'row',
           alignItems: 'center',
           paddingHorizontal: 4,
-          paddingBottom: 10,
+          paddingBottom: 12,
           width: 'match_parent',
         }}
         clickAction="OPEN_APP"
       >
-        <FlexWidget style={{ flex: 1 }}>
+        <FlexWidget
+          style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}
+        >
           <TextWidget
             text="DopaMenu"
             style={{
@@ -155,6 +167,14 @@ export function DopaMenuWidget({ data }: DopaMenuWidgetProps) {
               letterSpacing: 0.3,
             }}
           />
+          <TextWidget
+            text=" ›"
+            style={{
+              fontSize: 14,
+              fontWeight: '600',
+              color: COLOR_PRIMARY,
+            }}
+          />
         </FlexWidget>
         {data ? (
           <TextWidget
@@ -162,7 +182,7 @@ export function DopaMenuWidget({ data }: DopaMenuWidgetProps) {
             style={{
               fontSize: 11,
               color: COLOR_TEXT_SECONDARY,
-              fontWeight: '500',
+              fontWeight: '600',
             }}
           />
         ) : null}
@@ -174,7 +194,7 @@ export function DopaMenuWidget({ data }: DopaMenuWidgetProps) {
           style={{
             flex: 1,
             flexDirection: 'column',
-            flexGap: 6,
+            flexGap: 8,
             width: 'match_parent',
           }}
         >
