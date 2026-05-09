@@ -224,9 +224,11 @@ export default function SetupAutomationScreen() {
     };
   }, [trackedAppsFromStore.length, realPickedApps.length]);
 
-  // Display list: tier 1 → tier 2 → tier 3. `isHint` is true only when
-  // we're rendering the tier 3 fallback, so the chip-row label adapts
-  // ("Look for these in Shortcuts" vs "These are your apps").
+  // Display list: tier 1 → tier 2 → tier 3. Same label across all tiers
+  // ("Pick these apps in Shortcuts") since branching the copy on tier-3
+  // fallback created if-else fatigue testers complained about. Tier 3 is
+  // a best-effort guess; even if it's not 100% accurate, it's still a
+  // useful starting list for the user.
   const displayApps =
     trackedAppsFromStore.length > 0
       ? trackedAppsFromStore
@@ -237,8 +239,6 @@ export default function SetupAutomationScreen() {
           iosBundleId: a.bundleIdentifier,
         }))
       : popularInstalledHint;
-  const isHint =
-    trackedAppsFromStore.length === 0 && realPickedApps.length === 0;
 
   // Status of the automation setup. Drives the banner at the top of the
   // screen. Crucially, this NEVER replaces the steps view — the user can
@@ -430,14 +430,11 @@ export default function SetupAutomationScreen() {
             ]}
           >
             <Text style={[styles.appsCardTitle, { fontSize: r.ms(13) }]}>
-              {isHint
-                ? 'Look for these in Shortcuts'
-                : 'These are your apps'}
+              Pick these apps in Shortcuts
             </Text>
             <Text style={[styles.appsCardBlurb, { fontSize: r.ms(12) }]}>
-              {isHint
-                ? "iOS doesn't tell us exactly which apps you picked, but most users add at least one of these. Pick the ones you actually use."
-                : "When Shortcuts asks 'which apps?', tap each of these so the automation fires for all of them."}
+              When Shortcuts asks "which apps?", tap each one below. The
+              automation fires whenever you open any of them.
             </Text>
             <View style={[styles.appPreviewRow, { marginTop: r.scale(8) }]}>
               {displayApps.map((a) => (
@@ -476,12 +473,10 @@ export default function SetupAutomationScreen() {
               </Text>
             </View>
             <Text style={[styles.stepText, { fontSize: r.ms(14) }]}>
-              Tap <Text style={styles.bold}>Open Shortcuts</Text> below, then in
-              Shortcuts.app tap the <Text style={styles.bold}>Automation</Text>{' '}
-              tab at the bottom. If your Automation tab is empty, tap{' '}
-              <Text style={styles.bold}>Create Personal Automation</Text>. If
-              you already have automations, tap{' '}
-              <Text style={styles.bold}>+</Text> in the top-right.
+              Tap <Text style={styles.bold}>Open Shortcuts</Text> below. In
+              Shortcuts.app, tap the <Text style={styles.bold}>Automation</Text>{' '}
+              tab at the bottom, then tap{' '}
+              <Text style={styles.bold}>Create Personal Automation</Text>.
             </Text>
           </View>
 
@@ -492,11 +487,12 @@ export default function SetupAutomationScreen() {
               </Text>
             </View>
             <Text style={[styles.stepText, { fontSize: r.ms(14) }]}>
-              Pick <Text style={styles.bold}>App</Text> as the trigger →{' '}
-              <Text style={styles.bold}>Choose</Text> → multi-select the apps
-              from the chip card above. Confirm{' '}
-              <Text style={styles.bold}>Is Opened</Text> ✓ and toggle{' '}
-              <Text style={styles.bold}>Run Immediately</Text> ON. Tap Next.
+              Pick <Text style={styles.bold}>App</Text> from the trigger list.
+              Tap <Text style={styles.bold}>Choose</Text>, then tap each app
+              from your chip card above. Tap{' '}
+              <Text style={styles.bold}>Done</Text> top-right. Toggle{' '}
+              <Text style={styles.bold}>Run Immediately</Text> ON. Tap{' '}
+              <Text style={styles.bold}>Next</Text>.
             </Text>
           </View>
 
@@ -507,9 +503,9 @@ export default function SetupAutomationScreen() {
               </Text>
             </View>
             <Text style={[styles.stepText, { fontSize: r.ms(14) }]}>
-              In the action picker, search{' '}
-              <Text style={styles.bold}>Run Shortcut</Text> → tap it → tap the
-              empty Shortcut field → pick{' '}
+              In the action search bar, type{' '}
+              <Text style={styles.bold}>Run Shortcut</Text>. Tap it. Tap the
+              empty Shortcut field, then pick{' '}
               <Text style={styles.bold}>{SHORTCUT_NAME}</Text>.
             </Text>
           </View>
@@ -526,20 +522,6 @@ export default function SetupAutomationScreen() {
             </Text>
           </View>
 
-          {/* Duplicate-import handling: if the user already has the Pause
-              shortcut from a previous setup attempt, Apple shows a
-              "duplicate" dialog when they tap Add. Tell them this is fine
-              and what to do. Otherwise users hit this and stop. */}
-          <View style={[styles.note, { padding: r.scale(10), marginTop: spacing.md }]}>
-            <Ionicons name="information-circle" size={r.scale(15)} color="#7A6F85" />
-            <Text style={[styles.noteText, { fontSize: r.ms(11) }]}>
-              <Text style={styles.bold}>Already have it?</Text> If Shortcuts
-              says the Pause shortcut is a duplicate when you tap Add, tap{' '}
-              <Text style={styles.bold}>Cancel</Text> — you already have it
-              from a previous setup. Skip step 1 and go straight to Open
-              Shortcuts.
-            </Text>
-          </View>
         </View>
 
         <View style={[styles.note, { padding: r.scale(12), marginTop: r.scale(16) }]}>
