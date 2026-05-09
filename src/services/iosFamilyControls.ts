@@ -1,4 +1,4 @@
-import { Platform } from 'react-native';
+import { NativeModules, Platform } from 'react-native';
 import {
   IOS_APP_GROUP,
   IOS_AUTOMATION_BOUNCE_WINDOW_MS,
@@ -596,4 +596,48 @@ export function normalizeTriggerKey(raw: string | undefined | null): string {
     .replace(/:$/, '')
     .replace(/\s+/g, '')
     .toLowerCase();
+}
+
+// ─── FamilyActivitySelection app names (v18.2) ───────────────────────────
+//
+// kingstinct's react-native-device-activity exposes only `applicationCount`
+// for the user's FamilyActivityPicker selection — not the actual app names.
+// Apple's `FamilyActivitySelection.applications` set IS accessible from
+// host-app Swift and exposes each Application's `bundleIdentifier` +
+// `localizedDisplayName`, but JS can't reach that without a custom bridge.
+// We add one in plugins/app-intents/DopaMenuFamilyControls.swift +
+// DopaMenuFamilyControls.m. This function is the JS front door.
+//
+// Returns empty array on:
+//   • non-iOS (Android, web)
+//   • iOS < 16 (FamilyActivityPicker doesn't exist)
+//   • build that didn't include the bridge
+//   • no saved selection
+//   • App Group / decode failure
+//
+// Callers should treat empty as "fall back to popular installed apps hint."
+
+export interface SelectedApp {
+  bundleIdentifier: string;
+  displayName: string;
+}
+
+export async function getSelectedApplicationNames(): Promise<SelectedApp[]> {
+  if (Platform.OS !== 'ios') return [];
+  const native = (NativeModules as any).DopaMenuFamilyControls;
+  if (!native || typeof native.getSelectedApplicationNames !== 'function') {
+    return [];
+  }
+  try {
+    const result = await native.getSelectedApplicationNames();
+    if (!Array.isArray(result)) return [];
+    return result
+      .filter(
+        (e: any): e is SelectedApp =>
+          typeof e?.bundleIdentifier === 'string' &&
+          typeof e?.displayName === 'string',
+      );
+  } catch {
+    return [];
+  }
 }

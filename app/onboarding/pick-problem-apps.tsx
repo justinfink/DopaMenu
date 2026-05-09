@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { View, Text, StyleSheet, SafeAreaView, Platform, Alert } from 'react-native';
+import { View, Text, StyleSheet, SafeAreaView, Platform, Alert, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import { AppPicker, Button } from '../../src/components';
 import IosFamilyControlsPicker from '../../src/components/onboarding/IosFamilyControlsPicker';
@@ -99,23 +99,46 @@ export default function PickProblemApps() {
     router.push('/onboarding/pick-redirect-apps');
   };
 
-  const handleNext = async () => {
+  // Skip-without-setup confirmation. Shared between the (now secondary) Skip
+  // text-link and the Continue-with-no-selection guard. Copy adapts to
+  // platform/iOS version so users know what they're giving up.
+  const skipMessageFor = () =>
+    USE_NATIVE_IOS_PICKER
+      ? "Without picking apps here, DopaMenu can't step in when you open Instagram, TikTok, or anything else. You can come back any time from Settings, but the rest of the app won't have much to do until you do."
+      : Platform.OS === 'ios'
+      ? "Without picking apps here, the tap-free shortcut won't know what to gentle. You can come back any time from Settings."
+      : "DopaMenu won't have any apps to gently interrupt. You can come back any time from Settings.";
+
+  const handleContinue = async () => {
     if (canContinue) {
       await persistAndAdvance();
       return;
     }
-    // Skip-without-setup confirmation. The copy adapts to platform/iOS
-    // version so users know exactly what they're giving up.
-    const skipMessage =
-      USE_NATIVE_IOS_PICKER
-        ? "Without picking apps here, DopaMenu can't step in when you open Instagram, TikTok, or anything else. You can come back any time from Settings, but the rest of the app won't have much to do until you do."
-        : Platform.OS === 'ios'
-        ? "Without picking apps here, the tap-free shortcut won't know what to gentle. You can come back any time from Settings."
-        : "DopaMenu won't have any apps to gently interrupt. You can come back any time from Settings.";
+    // User tapped Continue without picking — confirm before letting them
+    // proceed empty-handed. Default action keeps them on the screen so
+    // they can pick (the right outcome); destructive button is the
+    // explicit escape hatch. Mirrors the explicit Skip link behavior so
+    // there's only one no-pick code path.
+    Alert.alert(
+      "You haven't picked any apps yet",
+      skipMessageFor(),
+      [
+        { text: 'Pick some apps', style: 'cancel' },
+        {
+          text: 'Continue without picks',
+          style: 'destructive',
+          onPress: () => {
+            void persistAndAdvance();
+          },
+        },
+      ],
+    );
+  };
 
+  const handleSkip = () => {
     Alert.alert(
       'Skip this step?',
-      skipMessage,
+      skipMessageFor(),
       [
         { text: 'Go back', style: 'cancel' },
         {
@@ -154,12 +177,23 @@ export default function PickProblemApps() {
         )}
       </View>
       <View style={[styles.footer, { padding: r.scale(20) }]}>
+        {/* Primary CTA is ALWAYS Continue. Tapping it with no picks shows a
+            confirmation alert that defaults to "Pick some apps" (cancel),
+            making the success path the obvious one. The Skip text-link below
+            is the secondary affordance for users who actually want to defer
+            setup. v18.1 had Skip as the primary button when canContinue was
+            false, which trained users to skip the entire setup. */}
         <Button
-          title={canContinue ? 'Continue' : 'Skip for now'}
-          onPress={handleNext}
+          title="Continue"
+          onPress={handleContinue}
           size="large"
           fullWidth
         />
+        <Pressable onPress={handleSkip} style={[styles.skipLinkWrap, { marginTop: r.scale(12) }]}>
+          <Text style={[styles.skipLinkText, { fontSize: r.ms(13) }]}>
+            Skip for now
+          </Text>
+        </Pressable>
       </View>
     </SafeAreaView>
   );
@@ -175,4 +209,12 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   footer: { borderTopWidth: 1, borderTopColor: '#EAE2F1' },
+  skipLinkWrap: { alignItems: 'center' },
+  // Muted color + small font intentionally — Skip is a secondary affordance,
+  // not the default tap target.
+  skipLinkText: {
+    color: '#7A6F85',
+    fontWeight: '500',
+    textDecorationLine: 'underline',
+  },
 });

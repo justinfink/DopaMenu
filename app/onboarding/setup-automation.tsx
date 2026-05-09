@@ -36,7 +36,11 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Button } from '../../src/components';
 import { useUserStore } from '../../src/stores/userStore';
-import { lastAutomationTriggerAt } from '../../src/services/iosFamilyControls';
+import {
+  getSelectedApplicationNames,
+  lastAutomationTriggerAt,
+  type SelectedApp,
+} from '../../src/services/iosFamilyControls';
 import {
   APP_CATALOG,
   AppCatalogEntry,
@@ -46,7 +50,13 @@ import { installedAppsService } from '../../src/services/installedApps';
 import { colors, spacing, typography } from '../../src/constants/theme';
 import { useResponsive } from '../../src/utils/responsive';
 
-const SHORTCUTS_DEEPLINK = 'shortcuts://create-automation';
+// `shortcuts://create-automation` is documented but unreliable across iOS
+// versions — on iOS 16.1.1 specifically it lands the user on a blank New
+// Shortcut editor instead of the Automations tab. `shortcuts://` opens the
+// app and lands users on whatever screen they were last on; combined with
+// step copy that says "tap the Automation tab," this is more durable across
+// iOS minor versions. Reported regression in v18.1 testing.
+const SHORTCUTS_DEEPLINK = 'shortcuts://';
 const SHORTCUTS_FALLBACK_DEEPLINK = 'shortcuts://';
 
 // iOS 15 fallback shortcut: AppIntents framework doesn't exist on iOS 15, so
@@ -139,16 +149,20 @@ export default function SetupAutomationScreen() {
   }, [fromOnboarding]);
 
   // Apps to surface as chips so the user knows exactly which ones to tap in
-  // Apple's Shortcuts UI. Two sources, in priority order:
-  //   1. trackedApps from the user store (populated on iOS 15 + Android where
-  //      we use our own RN picker — we know exactly which apps the user
-  //      picked).
-  //   2. On iOS 16+ trackedApps is empty because Apple's FamilyActivityPicker
-  //      stores opaque tokens we can't decode. Fall back to popular installed
-  //      apps as a hint — it's a probable-overlap with what they picked,
-  //      labeled clearly as "look for these" rather than "exactly these."
-  // Either way the chip row gives the user a concrete visual reference to
-  // mindlessly cross-check while they're tapping in Shortcuts.app.
+  // Apple's Shortcuts UI. Three sources, in priority order:
+  //   1. trackedApps from the React store — populated on iOS 15 + Android
+  //      where we use our own catalog picker. We know names exactly.
+  //   2. realPickedApps — populated on iOS 16+ via the new native bridge
+  //      (DopaMenuFamilyControls.swift) that reads FamilyActivitySelection
+  //      .applications and pulls bundleIdentifier + localizedDisplayName.
+  //      v18.1 didn't have this and showed only the popular-apps hint
+  //      below — that's the friction point that killed onboarding for
+  //      testers who had no idea which apps to find in Shortcuts.app.
+  //   3. popularInstalledHint — last-resort fallback when both above are
+  //      empty (no FamilyActivityPicker selection saved yet, or the bridge
+  //      returned nothing because Apple's privacy layer stripped names on
+  //      this iOS version). Honest "look for these popular ones" framing
+  //      so we don't pretend to know more than we do.
   const trackedAppsFromStore = useMemo(
     () =>
       (user?.preferences.trackedApps ?? [])
@@ -161,13 +175,34 @@ export default function SetupAutomationScreen() {
     [user],
   );
 
+  const [realPickedApps, setRealPickedApps] = useState<SelectedApp[]>([]);
   const [popularInstalledHint, setPopularInstalledHint] = useState<
     { label: string; catalogId: string; iosBundleId?: string }[]
   >([]);
 
+  // Tier 2: native bridge for iOS 16+ FamilyActivityPicker selection names.
+  // Runs once on mount + every time we re-foreground (in case the user just
+  // came back from the picker).
   useEffect(() => {
     if (Platform.OS !== 'ios') return;
-    if (trackedAppsFromStore.length > 0) return; // We know the real list
+    if (trackedAppsFromStore.length > 0) return; // Tier 1 wins
+    let cancelled = false;
+    (async () => {
+      const apps = await getSelectedApplicationNames();
+      if (!cancelled) setRealPickedApps(apps);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [trackedAppsFromStore.length]);
+
+  // Tier 3: popular installed apps fallback. Skips itself if either tier 1
+  // or tier 2 already returned data — no need to compute the fallback when
+  // the higher-priority sources are present.
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    if (trackedAppsFromStore.length > 0) return;
+    if (realPickedApps.length > 0) return;
     let cancelled = false;
     (async () => {
       const popular = getPopularProblemApps();
@@ -187,14 +222,23 @@ export default function SetupAutomationScreen() {
     return () => {
       cancelled = true;
     };
-  }, [trackedAppsFromStore.length]);
+  }, [trackedAppsFromStore.length, realPickedApps.length]);
 
-  // Display list: real picks first, fallback otherwise. The `isHint` flag
-  // changes the chip-row label so we don't lie to the user about whether
-  // we know their selection.
+  // Display list: tier 1 → tier 2 → tier 3. `isHint` is true only when
+  // we're rendering the tier 3 fallback, so the chip-row label adapts
+  // ("Look for these in Shortcuts" vs "These are your apps").
   const displayApps =
-    trackedAppsFromStore.length > 0 ? trackedAppsFromStore : popularInstalledHint;
-  const isHint = trackedAppsFromStore.length === 0;
+    trackedAppsFromStore.length > 0
+      ? trackedAppsFromStore
+      : realPickedApps.length > 0
+      ? realPickedApps.map((a) => ({
+          label: a.displayName,
+          catalogId: a.bundleIdentifier,
+          iosBundleId: a.bundleIdentifier,
+        }))
+      : popularInstalledHint;
+  const isHint =
+    trackedAppsFromStore.length === 0 && realPickedApps.length === 0;
 
   // Status of the automation setup. Drives the banner at the top of the
   // screen. Crucially, this NEVER replaces the steps view — the user can
@@ -432,9 +476,11 @@ export default function SetupAutomationScreen() {
               </Text>
             </View>
             <Text style={[styles.stepText, { fontSize: r.ms(14) }]}>
-              {NEEDS_ICLOUD_SHORTCUT
-                ? 'Then tap Open Shortcuts (Apple’s app, blue icon).'
-                : "We'll open the Shortcuts app to the right screen."}
+              Tap <Text style={styles.bold}>Open Shortcuts</Text> below, then in
+              Shortcuts.app tap the <Text style={styles.bold}>Automation</Text>{' '}
+              tab at the bottom, then tap the{' '}
+              <Text style={styles.bold}>+</Text> in the top-right to start a new
+              automation.
             </Text>
           </View>
 
@@ -445,9 +491,11 @@ export default function SetupAutomationScreen() {
               </Text>
             </View>
             <Text style={[styles.stepText, { fontSize: r.ms(14) }]}>
-              Tap <Text style={styles.bold}>Open App</Text>, then multi-select
-              the apps from the chip list above. (You can come back to this
-              screen any time to remind yourself which ones.)
+              Pick <Text style={styles.bold}>App</Text> as the trigger →{' '}
+              <Text style={styles.bold}>Choose</Text> → multi-select the apps
+              from the chip card above. Confirm{' '}
+              <Text style={styles.bold}>Is Opened</Text> ✓ and toggle{' '}
+              <Text style={styles.bold}>Run Immediately</Text> ON. Tap Next.
             </Text>
           </View>
 
@@ -458,8 +506,9 @@ export default function SetupAutomationScreen() {
               </Text>
             </View>
             <Text style={[styles.stepText, { fontSize: r.ms(14) }]}>
-              Tap Next. In the action list, search{' '}
-              <Text style={styles.bold}>Run Shortcut</Text> → tap it → pick{' '}
+              In the action picker, search{' '}
+              <Text style={styles.bold}>Run Shortcut</Text> → tap it → tap the
+              empty Shortcut field → pick{' '}
               <Text style={styles.bold}>{SHORTCUT_NAME}</Text>.
             </Text>
           </View>
@@ -471,7 +520,23 @@ export default function SetupAutomationScreen() {
               </Text>
             </View>
             <Text style={[styles.stepText, { fontSize: r.ms(14) }]}>
-              Tap Done. That's it — come back here.
+              Tap <Text style={styles.bold}>Done</Text> top-right. That's it —
+              come back here.
+            </Text>
+          </View>
+
+          {/* Duplicate-import handling: if the user already has the Pause
+              shortcut from a previous setup attempt, Apple shows a
+              "duplicate" dialog when they tap Add. Tell them this is fine
+              and what to do. Otherwise users hit this and stop. */}
+          <View style={[styles.note, { padding: r.scale(10), marginTop: spacing.md }]}>
+            <Ionicons name="information-circle" size={r.scale(15)} color="#7A6F85" />
+            <Text style={[styles.noteText, { fontSize: r.ms(11) }]}>
+              <Text style={styles.bold}>Already have it?</Text> If Shortcuts
+              says the Pause shortcut is a duplicate when you tap Add, tap{' '}
+              <Text style={styles.bold}>Cancel</Text> — you already have it
+              from a previous setup. Skip step 1 and go straight to Open
+              Shortcuts.
             </Text>
           </View>
         </View>

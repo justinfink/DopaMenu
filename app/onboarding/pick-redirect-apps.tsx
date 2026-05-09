@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { View, Text, StyleSheet, SafeAreaView } from 'react-native';
+import { View, Text, StyleSheet, SafeAreaView, Alert, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import { AppPicker, Button } from '../../src/components';
 import { APP_CATALOG } from '../../src/constants/appCatalog';
@@ -28,7 +28,7 @@ export default function PickRedirectApps() {
   );
   const [selected, setSelected] = useState<string[]>(initial);
 
-  const handleNext = () => {
+  const persistAndAdvance = () => {
     const redirectApps = selected
       .map((id) => APP_CATALOG.find((a) => a.id === id))
       .filter((a): a is NonNullable<typeof a> => !!a)
@@ -46,6 +46,39 @@ export default function PickRedirectApps() {
     router.push('/onboarding/permissions');
   };
 
+  const skipMessage =
+    "Without redirect apps picked, DopaMenu can still intervene but won't have personalized 'instead try this' suggestions to offer. You can come back any time from Settings.";
+
+  const handleContinue = () => {
+    if (selected.length > 0) {
+      persistAndAdvance();
+      return;
+    }
+    Alert.alert(
+      "You haven't picked any alternatives",
+      skipMessage,
+      [
+        { text: 'Pick some', style: 'cancel' },
+        {
+          text: 'Continue without picks',
+          style: 'destructive',
+          onPress: persistAndAdvance,
+        },
+      ],
+    );
+  };
+
+  const handleSkip = () => {
+    Alert.alert(
+      'Skip this step?',
+      skipMessage,
+      [
+        { text: 'Go back', style: 'cancel' },
+        { text: 'Skip anyway', style: 'destructive', onPress: persistAndAdvance },
+      ],
+    );
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <View style={[styles.content, { paddingHorizontal: r.scale(20), paddingTop: r.vscale(16) }]}>
@@ -59,12 +92,20 @@ export default function PickRedirectApps() {
         />
       </View>
       <View style={[styles.footer, { padding: r.scale(20) }]}>
+        {/* Primary CTA always Continue. Selection count shown in label so the
+            user feels acknowledged for picking something. Skip is the
+            secondary text-link below. */}
         <Button
-          title={selected.length ? `Continue (${selected.length})` : 'Skip for now'}
-          onPress={handleNext}
+          title={selected.length ? `Continue (${selected.length})` : 'Continue'}
+          onPress={handleContinue}
           size="large"
           fullWidth
         />
+        <Pressable onPress={handleSkip} style={[styles.skipLinkWrap, { marginTop: r.scale(12) }]}>
+          <Text style={[styles.skipLinkText, { fontSize: r.ms(13) }]}>
+            Skip for now
+          </Text>
+        </Pressable>
       </View>
     </SafeAreaView>
   );
@@ -80,4 +121,10 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   footer: { borderTopWidth: 1, borderTopColor: '#EAE2F1' },
+  skipLinkWrap: { alignItems: 'center' },
+  skipLinkText: {
+    color: '#7A6F85',
+    fontWeight: '500',
+    textDecorationLine: 'underline',
+  },
 });

@@ -400,6 +400,19 @@ export default function IosFamilyControlsPicker({
             use Screen Time — tap Allow. That's it. We use it only to put a
             soft pause in front of the apps you pick.
           </Text>
+          {/* Apple's FamilyActivityPicker shows categories like "Social,"
+              "Entertainment" with drill-in chevrons. iOS 16.x renders the
+              drill-in affordance smaller than iOS 17+ and users miss it —
+              tapping the row name select-alls the category instead of
+              expanding into individual apps. Tell them how to drill in. */}
+          {IOS_VERSION_NUM >= 16 && IOS_VERSION_NUM < 17 ? (
+            <Text style={[styles.authBody, { fontSize: 12, fontStyle: 'italic' }]}>
+              On iOS 16, iPhone groups your apps by category. To pick
+              individual apps (not the whole category), tap the small{' '}
+              <Text style={{ fontWeight: '700' }}>{'›'}</Text> at the right
+              end of each category row. Newer iOS versions make this clearer.
+            </Text>
+          ) : null}
           <Button
             title={busy ? 'Waiting on iPhone…' : 'Pick the apps'}
             onPress={handleGrantAuth}
