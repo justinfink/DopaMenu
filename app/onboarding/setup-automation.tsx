@@ -49,24 +49,71 @@ import { useResponsive } from '../../src/utils/responsive';
 const SHORTCUTS_DEEPLINK = 'shortcuts://create-automation';
 const SHORTCUTS_FALLBACK_DEEPLINK = 'shortcuts://';
 
-// iOS 15 fallback: AppIntents framework only exists on iOS 16+. So on iOS 15
-// our "Take a Pause" action doesn't auto-appear in Shortcuts.app. The
-// alternative is an iCloud-signed shortcut that the user installs once,
-// then references in their Personal Automation as "Run Shortcut → DopaMenu
-// Pause." The iCloud URL below is permanent — generated from a one-time
-// upload of a hand-built shortcut whose only action is
-// "Open URL dopamenu://intervention?source=automation". When fired, our
-// existing handleDeepLink in app/_layout.tsx routes to the intervention
-// modal exactly as the AppIntent path does.
-const ICLOUD_SHORTCUT_URL =
+// iOS 15 fallback shortcut: AppIntents framework doesn't exist on iOS 15, so
+// our "Take a Pause" / "Check Pause Bounce" actions can't be selected in
+// Shortcuts.app on those devices. Instead, the user imports this iCloud-
+// hosted shortcut whose ONLY action is "Open URL
+// dopamenu://intervention?source=automation". When the user's Personal
+// Automation runs it, our existing handleDeepLink in app/_layout.tsx routes
+// to the intervention modal — same end result as the AppIntent path, just
+// arriving via a different entrypoint.
+const ICLOUD_SHORTCUT_URL_IOS_15 =
   'https://www.icloud.com/shortcuts/b42c29cf21054d118c21a631f9ec8e78';
 
-// iOS 16+ has the AppIntent registered automatically via
-// DopaMenuAppShortcutsProvider in DopaMenuAppIntents.swift. iOS 15 needs the
-// iCloud-shared shortcut import flow. We dispatch the walkthrough off this.
+// iOS 16+ wrapper shortcut: built by Justin on a borrowed iPhone XR running
+// iOS 16.1.1 in v18.0.1. Action graph is the loop-fix gate:
+//
+//   1. Run AppIntent: Check Pause Bounce (IsBouncingIntent, openAppWhenRun=false)
+//      → returns Bool
+//   2. If [Result is true]
+//        → Stop This Shortcut
+//      Otherwise
+//        → Run AppIntent: Take a Pause (TakePauseIntent, openAppWhenRun=true)
+//
+// This is the entire mechanism that breaks the v17 infinite loop without
+// flashing DopaMenu on the bounce iterations. The wrapping Shortcut runs
+// IsBouncingIntent in background; when bounce is active, Stop halts before
+// TakePauseIntent ever foregrounds DopaMenu.
+//
+// The shortcut is currently named "Pause 1" in the iCloud snapshot (artifact
+// of a build-time duplicate-name collision; clean fix is rebuild + re-share
+// to a Pause-named shortcut). Walkthrough copy below references "Pause 1"
+// to match what users see in Apple's import preview. Patch when re-exported.
+const ICLOUD_SHORTCUT_URL_IOS_16_PLUS =
+  'https://www.icloud.com/shortcuts/1171d8c8b8c8482eb9757b90b995152c';
+
+// Version split:
+//   iOS 15 → import ICLOUD_SHORTCUT_URL_IOS_15 (single-action Open URL)
+//   iOS 16+ → import ICLOUD_SHORTCUT_URL_IOS_16_PLUS (Pause wrapper with gate)
+// In v17 the iOS 16+ flow had the user pick our AppIntent directly inside
+// their Personal Automation without any iCloud shortcut — that's what caused
+// the infinite loop. v18.1 unifies both versions onto the same import-then-
+// Run-Shortcut pattern. Each version imports a different hosted shortcut,
+// but the user-facing 5-step setup is identical.
 const IOS_VERSION_NUM =
   Platform.OS === 'ios' ? parseInt(String(Platform.Version), 10) : 0;
-const NEEDS_ICLOUD_SHORTCUT = Platform.OS === 'ios' && IOS_VERSION_NUM < 16;
+// True for any iOS version now (was iOS-15-only in v17). Both versions need
+// an iCloud import step, just with different URLs and different shortcut
+// names referenced inside the Personal Automation.
+const NEEDS_ICLOUD_SHORTCUT = Platform.OS === 'ios';
+// The URL the "Add the DopaMenu Pause shortcut" button opens. Picks the
+// right hosted shortcut for the user's iOS version.
+const ICLOUD_SHORTCUT_URL =
+  Platform.OS === 'ios' && IOS_VERSION_NUM >= 16
+    ? ICLOUD_SHORTCUT_URL_IOS_16_PLUS
+    : ICLOUD_SHORTCUT_URL_IOS_15;
+// The name of the shortcut the user picks inside the Personal Automation's
+// "Run Shortcut" action. Apple's import preview labels each shortcut by the
+// name it had at iCloud-share time, so the names must match what users see
+// after they tap "Add Shortcut" in step 1.
+//   iOS 16+: "Pause 1" (artifact of duplicate-name collision during build;
+//             clean fix is rebuild + re-share to a Pause-named shortcut)
+//   iOS 15:  "DopaMenu Pause" (the original single-action shortcut Roric
+//             uses; named cleanly at original creation)
+const SHORTCUT_NAME =
+  Platform.OS === 'ios' && IOS_VERSION_NUM >= 16
+    ? 'Pause 1'
+    : 'DopaMenu Pause';
 
 export default function SetupAutomationScreen() {
   const r = useResponsive();
@@ -411,19 +458,9 @@ export default function SetupAutomationScreen() {
               </Text>
             </View>
             <Text style={[styles.stepText, { fontSize: r.ms(14) }]}>
-              {NEEDS_ICLOUD_SHORTCUT ? (
-                <>
-                  Tap Next. In the action list, search{' '}
-                  <Text style={styles.bold}>Run Shortcut</Text> → tap it →
-                  pick <Text style={styles.bold}>DopaMenu Pause</Text>.
-                </>
-              ) : (
-                <>
-                  Tap Next, then in the action list tap{' '}
-                  <Text style={styles.bold}>DopaMenu</Text> →{' '}
-                  <Text style={styles.bold}>Take a Pause</Text>.
-                </>
-              )}
+              Tap Next. In the action list, search{' '}
+              <Text style={styles.bold}>Run Shortcut</Text> → tap it → pick{' '}
+              <Text style={styles.bold}>{SHORTCUT_NAME}</Text>.
             </Text>
           </View>
 
