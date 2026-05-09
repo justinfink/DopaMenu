@@ -47,21 +47,15 @@ export default function PickProblemApps() {
   const [iosSelectionCount, setIosSelectionCount] = useState(
     USE_NATIVE_IOS_PICKER && hasProblemAppSelection() ? 1 : 0,
   );
-  // Review-step gate. iOS 16+ users have to explicitly confirm their picks
-  // are the high-time apps before we let them advance — without this, Apple's
-  // picker can be tap-tap-Done in 1.5 seconds without the user actually
-  // looking at the screen-time numbers Apple is showing them. Pre-filled true
-  // for returning users (a saved selection means they reviewed previously).
-  const [iosReviewed, setIosReviewed] = useState(
-    USE_NATIVE_IOS_PICKER && hasProblemAppSelection(),
-  );
 
   // Continue is only "real" if the user actually picked something. iOS 16+
-  // uses the native picker (selection lives in App Group), iOS 15 + Android
-  // use our React Native picker (selection is the `selected` array). On iOS
-  // 16+ we additionally require the review confirmation.
+  // uses Apple's picker (selection lives in App Group); iOS 15 + Android
+  // use our React Native picker (selection is the `selected` array). v18.2's
+  // explicit-review gate was removed in v18.3 — testers reported it as
+  // friction; the morphing primary button ("Pick the apps" → "Continue →")
+  // already serves as the deliberate confirmation moment.
   const canContinue = USE_NATIVE_IOS_PICKER
-    ? iosSelectionCount > 0 && iosReviewed
+    ? iosSelectionCount > 0
     : selected.length > 0;
 
   const persistAndAdvance = async () => {
@@ -159,7 +153,12 @@ export default function PickProblemApps() {
         {USE_NATIVE_IOS_PICKER ? (
           <IosFamilyControlsPicker
             onSelectionChange={setIosSelectionCount}
-            onSelectionReviewed={setIosReviewed}
+            // Continue is now inline with the picker on iOS 16+ instead of
+            // in the screen footer. Removes the "scroll past picker to find
+            // Continue" friction that made testers abandon onboarding.
+            onContinue={() => {
+              void persistAndAdvance();
+            }}
           />
         ) : (
           <AppPicker
@@ -177,19 +176,24 @@ export default function PickProblemApps() {
         )}
       </View>
       <View style={[styles.footer, { padding: r.scale(20) }]}>
-        {/* Primary CTA is ALWAYS Continue. Tapping it with no picks shows a
-            confirmation alert that defaults to "Pick some apps" (cancel),
-            making the success path the obvious one. The Skip text-link below
-            is the secondary affordance for users who actually want to defer
-            setup. v18.1 had Skip as the primary button when canContinue was
-            false, which trained users to skip the entire setup. */}
-        <Button
-          title="Continue"
-          onPress={handleContinue}
-          size="large"
-          fullWidth
-        />
-        <Pressable onPress={handleSkip} style={[styles.skipLinkWrap, { marginTop: r.scale(12) }]}>
+        {/* On iOS 16+, the picker handles its own Continue button inline
+            (the primary purple button morphs from "Pick the apps" to
+            "Continue →" after a selection exists). The screen-footer
+            Continue is gone on this branch — having two CTAs caused
+            testers to tap the bottom one before they'd actually picked
+            anything, hit the "you haven't picked any apps yet" dialog,
+            and bail. iOS 15 + Android still use the AppPicker checkbox
+            list which works better with a sticky footer Continue.
+            Skip stays as a small text-link in both branches. */}
+        {!USE_NATIVE_IOS_PICKER ? (
+          <Button
+            title="Continue"
+            onPress={handleContinue}
+            size="large"
+            fullWidth
+          />
+        ) : null}
+        <Pressable onPress={handleSkip} style={[styles.skipLinkWrap, { marginTop: USE_NATIVE_IOS_PICKER ? 0 : r.scale(12) }]}>
           <Text style={[styles.skipLinkText, { fontSize: r.ms(13) }]}>
             Skip for now
           </Text>

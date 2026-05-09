@@ -478,9 +478,10 @@ export default function SetupAutomationScreen() {
             <Text style={[styles.stepText, { fontSize: r.ms(14) }]}>
               Tap <Text style={styles.bold}>Open Shortcuts</Text> below, then in
               Shortcuts.app tap the <Text style={styles.bold}>Automation</Text>{' '}
-              tab at the bottom, then tap the{' '}
-              <Text style={styles.bold}>+</Text> in the top-right to start a new
-              automation.
+              tab at the bottom. If your Automation tab is empty, tap{' '}
+              <Text style={styles.bold}>Create Personal Automation</Text>. If
+              you already have automations, tap{' '}
+              <Text style={styles.bold}>+</Text> in the top-right.
             </Text>
           </View>
 
