@@ -454,16 +454,23 @@ export function LiveMenu({ onEditQuietHours }: LiveMenuProps) {
 
         {/* iOS-only ad-hoc pause controls. Sits inside the card header area
             so the relationship between "Right now" and "DopaMenu is currently
-            paused" is visually grouped. Hidden on Android (no analog
-            mechanism in v19; the Android side already gates on quiet hours
-            + per-app windows but doesn't have a global on-demand pause). */}
-        {Platform.OS === 'ios' && !quietState.isQuiet && (
-          <PauseControls
-            pausedNow={pausedNow}
-            pausedUntilMs={pausedUntilMs}
-            onChange={onPauseChanged}
-          />
-        )}
+            paused" is visually grouped. Hidden when:
+              • not iOS (Android has no analog mechanism in v19)
+              • already in a quiet window (the quiet banner already conveys
+                "DopaMenu is silent" — pause-on-top-of-quiet adds noise
+                and the silence gate catches both regardless)
+              • user hasn't completed onboarding / monitoring is off (nothing
+                armed → "pause for 1 hour" would show a paused banner with
+                nothing actually being paused) */}
+        {Platform.OS === 'ios' &&
+          !quietState.isQuiet &&
+          user?.preferences.appMonitoringEnabled === true && (
+            <PauseControls
+              pausedNow={pausedNow}
+              pausedUntilMs={pausedUntilMs}
+              onChange={onPauseChanged}
+            />
+          )}
 
         {quietState.isQuiet ? (
           <View style={styles.quietState}>
