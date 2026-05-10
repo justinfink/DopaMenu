@@ -647,6 +647,67 @@ export async function getSelectedApplicationNames(): Promise<SelectedApp[]> {
   }
 }
 
+/**
+ * Project FamilyActivityPicker-selected apps into a list of TrackedAppConfig
+ * entries we can write to user.preferences.trackedApps. Mirrors the v19.2
+ * onboarding-side population call but exposed here so the boot-time
+ * recovery path (and any future "rebuild from selection" surface) shares
+ * the exact same logic.
+ *
+ * We try to enrich each entry from APP_CATALOG by matching on iosBundleId
+ * — when a match exists, we get the canonical catalog id, label, category,
+ * and androidPackage (irrelevant on iOS but harmless). When no match, we
+ * fall back to the bundleId as packageName + the localizedDisplayName as
+ * label. Either way the entry is a valid TrackedAppConfig the home page's
+ * Triggers editor can render and toggle.
+ *
+ * Note we do NOT copy `iosScheme` because TrackedAppConfig doesn't have
+ * that field — the resolver looks up schemes via APP_CATALOG at trigger
+ * time (using catalogId or label).
+ */
+export function buildTrackedAppsFromIosSelection(
+  selected: SelectedApp[],
+  catalog: ReadonlyArray<{
+    id: string;
+    label: string;
+    iosBundleId?: string;
+    androidPackage?: string;
+    category?: string;
+  }>,
+): Array<{
+  packageName: string;
+  label: string;
+  enabled: boolean;
+  iosBundleId?: string;
+  catalogId?: string;
+  category?: string;
+}> {
+  return selected.map((app) => {
+    const catalogMatch = catalog.find(
+      (c) => c.iosBundleId && c.iosBundleId === app.bundleIdentifier,
+    );
+    if (catalogMatch) {
+      return {
+        // Use androidPackage when available so cross-platform code (e.g.
+        // analytics aggregation by package) keeps the same key the iOS 15
+        // / Android paths already use. Fall back to bundleId otherwise.
+        packageName: catalogMatch.androidPackage ?? app.bundleIdentifier,
+        label: catalogMatch.label,
+        enabled: true,
+        iosBundleId: app.bundleIdentifier,
+        catalogId: catalogMatch.id,
+        category: catalogMatch.category,
+      };
+    }
+    return {
+      packageName: app.bundleIdentifier,
+      label: app.displayName || app.bundleIdentifier,
+      enabled: true,
+      iosBundleId: app.bundleIdentifier,
+    };
+  });
+}
+
 // ─── Dynamic in-app control state (v19) ──────────────────────────────────
 //
 // Apple won't let us reconfigure the user's Personal Automation trigger list

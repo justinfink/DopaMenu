@@ -8,6 +8,8 @@ import { useUserStore } from '../../src/stores/userStore';
 import { useResponsive } from '../../src/utils/responsive';
 import { colors } from '../../src/constants/theme';
 import {
+  buildTrackedAppsFromIosSelection,
+  getSelectedApplicationNames,
   hasProblemAppSelection,
   startBlocking,
 } from '../../src/services/iosFamilyControls';
@@ -60,15 +62,34 @@ export default function PickProblemApps() {
 
   const persistAndAdvance = async () => {
     if (USE_NATIVE_IOS_PICKER) {
-      // iOS 16+: tokens are opaque, we don't keep our own list. Apple's
-      // picker already wrote the selection to App Group storage. Flip
-      // blocking on now so the Shield is armed before they leave this
-      // screen.
+      // iOS 16+: tokens are opaque, but in v19.2 we also project the
+      // selection into our React-side trackedApps list using
+      // FamilyActivitySelection.applications (via the Swift bridge).
+      // That list drives the home-page Triggers editor (so users can
+      // toggle individual apps off without leaving DopaMenu) and the
+      // chip card on the setup-automation walkthrough. Without this
+      // step, iOS 16+ users had an empty Triggers list and disarm was
+      // unreachable — even though the silence gate was wired up.
       if (hasProblemAppSelection()) {
         try {
           await startBlocking();
         } catch (err) {
           console.warn('[onboarding] startBlocking failed', err);
+        }
+        try {
+          const selectedApps = await getSelectedApplicationNames();
+          if (selectedApps.length > 0) {
+            const trackedApps = buildTrackedAppsFromIosSelection(
+              selectedApps,
+              APP_CATALOG,
+            );
+            updatePreferences({ trackedApps });
+          }
+        } catch (err) {
+          console.warn(
+            '[onboarding] populate trackedApps from FamilyActivityPicker failed',
+            err,
+          );
         }
       }
       router.push('/onboarding/pick-redirect-apps');

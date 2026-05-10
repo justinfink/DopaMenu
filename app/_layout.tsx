@@ -9,6 +9,7 @@ import { useInterventionStore } from '../src/stores/interventionStore';
 import { notificationService, analyticsService, AnalyticsEvents, appUsageService } from '../src/services';
 import { deriveQuietHourRanges } from '../src/services/appUsage';
 import {
+  buildTrackedAppsFromIosSelection,
   clearAutomationBounceIfExpired,
   consumeAutomationHandoff,
   consumeAutomationTriggerApp,
@@ -16,6 +17,7 @@ import {
   ensureQuietHoursPause,
   ensureShieldArmedIfWindowExpired,
   getAuthorizationStatus as getFamilyControlsStatus,
+  getSelectedApplicationNames,
   hasProblemAppSelection,
   markInterventionShown,
   peekAutomationBounce,
@@ -27,7 +29,7 @@ import {
   shouldSilenceForTriggerJs,
   startBlocking as startIosBlocking,
 } from '../src/services/iosFamilyControls';
-import { findCatalogEntryByTriggerKey } from '../src/constants/appCatalog';
+import { APP_CATALOG, findCatalogEntryByTriggerKey } from '../src/constants/appCatalog';
 import { simulateSituation, generateIntervention } from '../src/engine/InterventionEngine';
 import { buildCandidatePool, launchOrShow } from '../src/services/interventionResolver';
 import { colors } from '../src/constants/theme';
@@ -138,6 +140,41 @@ export default function RootLayout() {
         }
       }
 
+      // iOS v19.2 backfill: if the user has a FamilyActivityPicker
+      // selection but trackedApps is empty (because they ran an earlier
+      // build that didn't populate it on iOS 16+), fetch the selection
+      // names via the Swift bridge and synthesize a trackedApps list.
+      // Without this, iOS 16+ users have an empty Triggers list in
+      // QuickEditPanel and disarm is unreachable. Idempotent — only
+      // backfills when trackedApps is empty. iOS-version gate is
+      // implicit: hasProblemAppSelection() returns false on iOS 15,
+      // and getSelectedApplicationNames() returns [] there too.
+      if (
+        Platform.OS === 'ios' &&
+        hasProblemAppSelection() &&
+        currentUser.preferences.trackedApps.length === 0
+      ) {
+        try {
+          const selectedApps = await getSelectedApplicationNames();
+          if (selectedApps.length > 0) {
+            const trackedApps = buildTrackedAppsFromIosSelection(
+              selectedApps,
+              APP_CATALOG,
+            );
+            const { updatePreferences: storeUpdatePrefs } = useUserStore.getState();
+            storeUpdatePrefs({ trackedApps });
+            // Note: the userStore subscription below will fire on this
+            // update and push the v19 state to App Group automatically.
+            // We don't need to also call setDisarmedKeysForIos here.
+          }
+        } catch (err) {
+          console.warn(
+            '[iOSFamilyControls] v19.2 trackedApps backfill failed',
+            err,
+          );
+        }
+      }
+
       // iOS v19: push dynamic-state mirrors to App Group at boot so the
       // Pause Shortcut's silence gate sees the latest values on the very
       // first fire after install/restart — no race between user opening a
@@ -146,12 +183,18 @@ export default function RootLayout() {
       // subscription below.
       if (Platform.OS === 'ios') {
         try {
-          setQuietHoursForIos(currentUser.preferences.quietHours);
+          // Re-read prefs in case the v19.2 backfill above just mutated
+          // trackedApps — useUserStore.getState() returns the latest
+          // snapshot synchronously, even though `currentUser` was
+          // captured at useEffect entry.
+          const latestPrefs =
+            useUserStore.getState().user?.preferences ?? currentUser.preferences;
+          setQuietHoursForIos(latestPrefs.quietHours);
           // Disarmed = trackedApps with enabled=false. Each app contributes
           // every key shape we might see from the Shortcut (bundleId, label,
           // catalogId, packageName) so the Swift normalizer matches whatever
           // Shortcut Input passes through.
-          const disarmedTracked = currentUser.preferences.trackedApps.filter(
+          const disarmedTracked = latestPrefs.trackedApps.filter(
             (a) => !a.enabled,
           );
           const disarmedKeys: string[] = [];
@@ -162,15 +205,13 @@ export default function RootLayout() {
             if (a.packageName) disarmedKeys.push(a.packageName);
           }
           setDisarmedKeysForIos(disarmedKeys);
-          setAppWindowsForIos(
-            deriveAppWindowsForIos(currentUser.preferences.trackedApps),
-          );
+          setAppWindowsForIos(deriveAppWindowsForIos(latestPrefs.trackedApps));
           // If the user is currently inside a quiet window, drop the Shield
           // for the rest of that window. The DeviceActivityMonitor's
           // suppressionExpired event will re-arm exactly when quiet hours
           // end — even if DopaMenu isn't running. Idempotent; no-op when
           // not in quiet hours or already paused longer.
-          await ensureQuietHoursPause(currentUser.preferences.quietHours);
+          await ensureQuietHoursPause(latestPrefs.quietHours);
         } catch (err) {
           console.warn('[iOSFamilyControls] v19 state push failed', err);
         }
