@@ -147,15 +147,15 @@ export default function RootLayout() {
       if (Platform.OS === 'ios') {
         try {
           setQuietHoursForIos(currentUser.preferences.quietHours);
-          const enabledTracked = currentUser.preferences.trackedApps.filter(
-            (a) => !a.enabled,
-          );
           // Disarmed = trackedApps with enabled=false. Each app contributes
           // every key shape we might see from the Shortcut (bundleId, label,
           // catalogId, packageName) so the Swift normalizer matches whatever
           // Shortcut Input passes through.
+          const disarmedTracked = currentUser.preferences.trackedApps.filter(
+            (a) => !a.enabled,
+          );
           const disarmedKeys: string[] = [];
-          for (const a of enabledTracked) {
+          for (const a of disarmedTracked) {
             if (a.iosBundleId) disarmedKeys.push(a.iosBundleId);
             if (a.label) disarmedKeys.push(a.label);
             if (a.catalogId) disarmedKeys.push(a.catalogId);
