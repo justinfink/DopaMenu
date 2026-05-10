@@ -396,11 +396,14 @@ export default function RootLayout() {
           // DopaMenu DURING their quiet window (e.g. they checked the time
           // at 11pm while quiet hours start at 22:00) and the boot path
           // didn't catch it because they weren't yet in a quiet window
-          // when DopaMenu last loaded.
+          // when DopaMenu last loaded. Use a fresh getState() read instead
+          // of `currentUser` because the user may have edited quiet hours
+          // while DopaMenu was backgrounded — the closure here captured
+          // setupServices's snapshot.
           if (Platform.OS === 'ios') {
-            void ensureQuietHoursPause(
-              currentUser.preferences.quietHours ?? [],
-            );
+            const latestQuiet =
+              useUserStore.getState().user?.preferences.quietHours ?? [];
+            void ensureQuietHoursPause(latestQuiet);
           }
         }
       },
