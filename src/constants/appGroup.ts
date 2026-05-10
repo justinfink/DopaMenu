@@ -72,3 +72,75 @@ export const IOS_USERDEFAULTS_AUTOMATION_BOUNCE_UNTIL = 'automationBounceUntil';
 export const IOS_USERDEFAULTS_AUTOMATION_BOUNCE_TRIGGER_KEY =
   'automationBounceTriggerKey';
 export const IOS_AUTOMATION_BOUNCE_WINDOW_MS = 8_000;
+
+/**
+ * v19 dynamic-state keys.
+ *
+ * Apple won't let us reconfigure a user's Personal Automation trigger list
+ * after onboarding. So we make the trigger list a one-time decision and put
+ * day-to-day control in App Group state that AppIntents read on every
+ * Shortcut fire. JS owns the source of truth, native AppIntents read.
+ *
+ * All four are JSON-stringified before writing — kingstinct's bridge prefers
+ * primitives/strings, so we serialize ourselves rather than rely on native
+ * NSArray/NSDictionary marshalling that varies by iOS version.
+ */
+
+/**
+ * User-configured quiet hours, mirrored from `userPreferences.quietHours`.
+ * Shape: JSON-stringified `[{start: 'HH:mm', end: 'HH:mm'}]` (overnight ranges
+ * supported, e.g. start='22:00', end='07:00'). Read by the Pause Shortcut's
+ * silence gate; if now is in any range, the gate returns true and the
+ * Shortcut halts before TakePauseIntent fires. Also consulted by the
+ * DeviceActivityMonitor segments so the Shield itself respects quiet hours.
+ */
+export const IOS_USERDEFAULTS_QUIET_HOURS = 'quietHours';
+
+/**
+ * Apps the user has explicitly disarmed in the home-page trigger toggle —
+ * the equivalent of unchecking Instagram in QuickEditPanel.Triggers. The
+ * Personal Automation still fires for these apps (we can't edit the trigger
+ * list), but the silence gate short-circuits the Shortcut so DopaMenu never
+ * intervenes. Re-arming removes the entry, restoring intervention.
+ *
+ * Shape: JSON-stringified `string[]`. Each entry is a normalizeTriggerKey()
+ * canonicalization (lowercased, whitespace + scheme suffix stripped, NFKD)
+ * — same normalization both Swift and JS apply before comparison.
+ *
+ * NOTE: Shield-side enforcement (Apple's block screen on the same apps) is
+ * NOT affected by disarm — disarming only silences the Shortcut path. The
+ * Shield will still gate any disarmed app the user has in their
+ * FamilyActivityPicker selection. Document this trade-off; the alternative
+ * (rebuilding FamilyActivitySelection on every toggle) is a larger
+ * round-trip that we defer.
+ */
+export const IOS_USERDEFAULTS_DISARMED_KEYS = 'disarmedKeys';
+
+/**
+ * Per-app monitoring windows. Apps not in this map default to "monitor
+ * 24/7." Apps with an entry are monitored only inside the listed range(s)
+ * on the listed day(s). Outside those windows the silence gate fires →
+ * Shortcut halts → menu doesn't show.
+ *
+ * Shape: JSON-stringified `Record<string, Array<{start, end, daysOfWeek?}>>`
+ * keyed by normalizeTriggerKey() canonical key. start/end are 'HH:mm'.
+ * daysOfWeek is 1=Mon..7=Sun (omit/undefined = all days). Multiple windows
+ * per app supported (e.g. 09:00–12:00 + 14:00–17:00 weekdays).
+ */
+export const IOS_USERDEFAULTS_APP_WINDOWS = 'appWindows';
+
+/**
+ * Trigger app passed from the Personal Automation through Shortcut Input →
+ * OpenDopaMenuPauseIntent's `triggerApp` parameter → stamped here in App
+ * Group on every fire. JS reads on handoff so we can:
+ *   • Include the actual triggerApp in PostHog events (v18 logged 'unknown'
+ *     because Apple doesn't pipe trigger context through AppIntents
+ *     automatically — the user has to wire Shortcut Input as a parameter).
+ *   • Apply the silence gate JS-side as defense-in-depth (so quiet hours
+ *     work even for users on the v17-style direct-AppIntent setup who
+ *     haven't re-imported the wrapper Shortcut with the silence gate).
+ *
+ * Stored as a string (the raw value the Shortcut passes — could be a bundle
+ * id, display name, or scheme prefix). Cleared after consumption.
+ */
+export const IOS_USERDEFAULTS_AUTOMATION_TRIGGER_APP = 'automationTriggerApp';

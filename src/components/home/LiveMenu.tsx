@@ -7,9 +7,11 @@ import {
   AppState,
   AppStateStatus,
   Platform,
+  Alert,
 } from 'react-native';
 import { useFocusEffect, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import { Card } from '..';
 import { useUserStore } from '../../stores/userStore';
 import { useInterventionStore } from '../../stores/interventionStore';
@@ -19,6 +21,12 @@ import { useIntervention } from '../../hooks/useIntervention';
 import { isTimeInRange, formatHHMMForDisplay } from '../../utils/time';
 import { getTimeBucketLabel, EFFORT_LABELS } from '../../widget/iconMap';
 import { analyticsService, AnalyticsEvents, appUsageService } from '../../services';
+import {
+  isPaused,
+  pausedUntil,
+  pauseBlockingFor,
+  resumeBlocking,
+} from '../../services/iosFamilyControls';
 import { colors, spacing, borderRadius, typography, shadows } from '../../constants/theme';
 import type { InterventionCandidate } from '../../models';
 
@@ -51,6 +59,206 @@ function computeQuietState(
   }
   return { isQuiet: false };
 }
+
+/**
+ * Format ms-remaining into a friendly "X minutes" / "X hours, Y minutes"
+ * string for the paused-banner. Always ceil to the nearest minute so a
+ * 59-second remainder doesn't display "0 minutes."
+ */
+function formatRemainingDuration(ms: number): string {
+  if (ms <= 0) return 'a moment';
+  const totalMin = Math.ceil(ms / 60_000);
+  if (totalMin < 60) return `${totalMin} min`;
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  if (m === 0) return `${h} hr`;
+  return `${h} hr ${m} min`;
+}
+
+/**
+ * Compute ms from now to "tomorrow at 7am" (the user's local time). Used by
+ * the "Pause until tomorrow morning" preset — long enough to cover a full
+ * sleep cycle without manually entering quiet hours, short enough that a
+ * mistaken tap doesn't strand the user paused for days.
+ */
+function msUntilTomorrowMorning(): number {
+  const now = new Date();
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(7, 0, 0, 0);
+  return Math.max(60_000, tomorrow.getTime() - now.getTime());
+}
+
+/**
+ * iOS-only "Pause everything" controls. Drops the Shield + silences the
+ * Pause Shortcut for a chosen duration. Hidden when paused — the paused
+ * banner replaces it. Cheap state: every render re-reads pausedUntil() from
+ * the App Group; AppState 'active' polls force re-mount.
+ *
+ * Why this lives here (inside LiveMenu) and not as its own component: the
+ * pause directly affects what the LiveMenu shows. When paused, the menu's
+ * "Right now" rows are still there (you can still tap a chore), but the
+ * banner above makes clear that automated interventions are off.
+ */
+interface PauseControlsProps {
+  /** True when paused — render the resume affordance instead of the picker. */
+  pausedNow: boolean;
+  /** Epoch ms of when the pause ends. Used to format the remaining label. */
+  pausedUntilMs: number;
+  /** After mutating, ask the parent to re-poll pause state. */
+  onChange: () => void;
+}
+
+function PauseControls({ pausedNow, pausedUntilMs, onChange }: PauseControlsProps) {
+  if (Platform.OS !== 'ios') return null;
+
+  const handlePause = (durationMs: number, label: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    void (async () => {
+      try {
+        await pauseBlockingFor(durationMs);
+        analyticsService.track(AnalyticsEvents.INTERVENTION_SHOWN, {
+          trigger: 'pause_everything',
+          duration: label,
+          durationMs,
+        });
+      } catch (err) {
+        console.warn('[LiveMenu] pauseBlockingFor failed', err);
+        Alert.alert(
+          "Couldn't pause",
+          'Something went wrong arming the pause. Try again in a moment.',
+        );
+      } finally {
+        onChange();
+      }
+    })();
+  };
+
+  const handleResume = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    void (async () => {
+      try {
+        await resumeBlocking();
+        analyticsService.track(AnalyticsEvents.INTERVENTION_SHOWN, {
+          trigger: 'resume_everything',
+        });
+      } catch (err) {
+        console.warn('[LiveMenu] resumeBlocking failed', err);
+      } finally {
+        onChange();
+      }
+    })();
+  };
+
+  if (pausedNow) {
+    const remaining = pausedUntilMs - Date.now();
+    return (
+      <View style={pauseStyles.pausedBanner}>
+        <Ionicons name="pause-circle" size={20} color="#5C4A72" />
+        <View style={{ flex: 1 }}>
+          <Text style={pauseStyles.pausedTitle}>Paused</Text>
+          <Text style={pauseStyles.pausedBody}>
+            DopaMenu is off for the next {formatRemainingDuration(remaining)}. Apps open
+            normally; the menu stays here for reference.
+          </Text>
+        </View>
+        <TouchableOpacity
+          onPress={handleResume}
+          style={pauseStyles.resumeButton}
+          accessibilityLabel="Resume DopaMenu"
+        >
+          <Text style={pauseStyles.resumeButtonText}>Resume</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  return (
+    <View style={pauseStyles.pickerRow}>
+      <TouchableOpacity
+        style={pauseStyles.pickerChip}
+        onPress={() => handlePause(15 * 60_000, '15m')}
+      >
+        <Ionicons name="pause-outline" size={14} color={colors.primary} />
+        <Text style={pauseStyles.pickerChipText}>Pause 15m</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={pauseStyles.pickerChip}
+        onPress={() => handlePause(60 * 60_000, '1h')}
+      >
+        <Ionicons name="pause-outline" size={14} color={colors.primary} />
+        <Text style={pauseStyles.pickerChipText}>Pause 1h</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={pauseStyles.pickerChip}
+        onPress={() =>
+          handlePause(msUntilTomorrowMorning(), 'until_morning')
+        }
+      >
+        <Ionicons name="moon-outline" size={14} color={colors.primary} />
+        <Text style={pauseStyles.pickerChipText}>Until 7am</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+const pauseStyles = StyleSheet.create({
+  pickerRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
+    marginBottom: spacing.sm,
+  },
+  pickerChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.primaryLight,
+    backgroundColor: colors.surface,
+  },
+  pickerChipText: {
+    fontSize: typography.sizes.xs,
+    color: colors.primary,
+    fontWeight: typography.weights.semibold,
+  },
+  pausedBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    padding: spacing.sm,
+    backgroundColor: '#F4EEFB',
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: '#E2D7EC',
+    marginBottom: spacing.sm,
+  },
+  pausedTitle: {
+    fontSize: typography.sizes.sm,
+    fontWeight: typography.weights.bold,
+    color: '#3D354A',
+  },
+  pausedBody: {
+    fontSize: typography.sizes.xs,
+    color: '#6D6378',
+    marginTop: 2,
+    lineHeight: 16,
+  },
+  resumeButton: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+    borderRadius: borderRadius.sm,
+    backgroundColor: colors.primary,
+  },
+  resumeButtonText: {
+    fontSize: typography.sizes.xs,
+    color: colors.textInverse,
+    fontWeight: typography.weights.bold,
+  },
+});
 
 function InterventionRow({
   intervention,
@@ -123,6 +331,18 @@ export function LiveMenu({ onEditQuietHours }: LiveMenuProps) {
   const [data, setData] = useState<LiveMenuData | null>(null);
   const [accessibilityGranted, setAccessibilityGranted] = useState<boolean>(true);
 
+  // iOS pause state. Polled on mount, on AppState 'active', after explicit
+  // pause/resume, and once per minute via interval so the "paused for X" text
+  // counts down naturally. Re-reads from App Group via the kingstinct bridge.
+  // pauseTick is incremented to force a re-render so isPaused()/pausedUntil()
+  // re-poll their App Group values; we don't read pauseTick directly.
+  const [, setPauseTick] = useState<number>(0);
+  const pausedNow = Platform.OS === 'ios' ? isPaused() : false;
+  const pausedUntilMs = Platform.OS === 'ios' ? pausedUntil() : 0;
+  const onPauseChanged = useCallback(() => {
+    setPauseTick((n) => n + 1);
+  }, []);
+
   const refresh = useCallback(async () => {
     const next = await getLiveMenuData();
     setData(next);
@@ -157,9 +377,25 @@ export function LiveMenu({ onEditQuietHours }: LiveMenuProps) {
       if (s !== 'active') return;
       checkAccessibility();
       void refresh();
+      // Re-poll pause state on foreground — covers the case where the user
+      // pauses, backgrounds DopaMenu, and comes back later. Without this,
+      // the banner would show stale "30 min remaining" when they return
+      // 45 minutes later (state would only refresh on next pauseTick).
+      setPauseTick((n) => n + 1);
     });
     return () => sub.remove();
   }, [refresh]);
+
+  // Tick the paused-banner countdown once per minute so "paused for X" stays
+  // accurate without each render re-querying the App Group. iOS-only —
+  // saves a re-render cycle on Android where pausedNow is always false.
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    const interval = setInterval(() => {
+      setPauseTick((n) => n + 1);
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, []);
 
   const quietState = computeQuietState(user?.preferences.quietHours);
 
@@ -215,6 +451,19 @@ export function LiveMenu({ onEditQuietHours }: LiveMenuProps) {
             </Text>
           )}
         </View>
+
+        {/* iOS-only ad-hoc pause controls. Sits inside the card header area
+            so the relationship between "Right now" and "DopaMenu is currently
+            paused" is visually grouped. Hidden on Android (no analog
+            mechanism in v19; the Android side already gates on quiet hours
+            + per-app windows but doesn't have a global on-demand pause). */}
+        {Platform.OS === 'ios' && !quietState.isQuiet && (
+          <PauseControls
+            pausedNow={pausedNow}
+            pausedUntilMs={pausedUntilMs}
+            onChange={onPauseChanged}
+          />
+        )}
 
         {quietState.isQuiet ? (
           <View style={styles.quietState}>

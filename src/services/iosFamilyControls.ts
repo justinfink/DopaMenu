@@ -10,15 +10,20 @@ import {
   IOS_INTERVENTION_DEBOUNCE_MS,
   IOS_SHIELD_ARMED_TTL_MS,
   IOS_SUPPRESSION_WINDOW_MS,
+  IOS_USERDEFAULTS_APP_WINDOWS,
   IOS_USERDEFAULTS_AUTOMATION_BOUNCE_TO,
   IOS_USERDEFAULTS_AUTOMATION_BOUNCE_TRIGGER_KEY,
   IOS_USERDEFAULTS_AUTOMATION_BOUNCE_UNTIL,
+  IOS_USERDEFAULTS_AUTOMATION_TRIGGER_APP,
   IOS_USERDEFAULTS_AUTOMATION_TRIGGERED_AT,
+  IOS_USERDEFAULTS_DISARMED_KEYS,
   IOS_USERDEFAULTS_LAST_INTERVENTION_SHOWN,
   IOS_USERDEFAULTS_LAST_SHIELD_TRIGGER,
+  IOS_USERDEFAULTS_QUIET_HOURS,
   IOS_USERDEFAULTS_SHIELD_ARMED_AT,
   IOS_USERDEFAULTS_SUPPRESSED_UNTIL,
 } from '../constants/appGroup';
+import type { MonitoringWindow, TimeRange } from '../models';
 
 // react-native-device-activity is iOS-only. Guard every call so Android and
 // web don't blow up trying to import the native module.
@@ -640,4 +645,403 @@ export async function getSelectedApplicationNames(): Promise<SelectedApp[]> {
   } catch {
     return [];
   }
+}
+
+// ─── Dynamic in-app control state (v19) ──────────────────────────────────
+//
+// Apple won't let us reconfigure the user's Personal Automation trigger list
+// after onboarding. So we make the trigger list a one-time decision and put
+// day-to-day control here: in App Group state that the Pause Shortcut's
+// new ShouldSilencePauseIntent reads on every fire. JS owns the source of
+// truth, AppIntent reads. Same proven pattern as the v18 bounce flag.
+//
+// All four collections are JSON-stringified when written. The kingstinct
+// bridge prefers primitives/strings — serializing ourselves is more
+// portable than relying on NSArray/NSDictionary marshalling that varies
+// by iOS version. Swift-side decoders parse the JSON back.
+//
+// Defense-in-depth: every "is now silenced?" check has a JS-side mirror so
+// the UX still works correctly for users on the v17/v18-style direct
+// AppIntent setup who haven't re-imported the wrapper Shortcut with the
+// silence gate. Once they re-import, the Swift gate stops the Shortcut
+// before DopaMenu ever foregrounds — but until then, the JS guard in
+// _layout.tsx catches the handoff and routes back to the trigger app.
+
+/**
+ * Mirrored time-of-day quiet hours. Pushed from the userStore subscription on
+ * every preferences change. Stored as JSON-stringified array so kingstinct's
+ * userDefaultsSet (which prefers primitives) round-trips reliably.
+ */
+export function setQuietHoursForIos(ranges: TimeRange[]): void {
+  if (!isSupported()) return;
+  const sanitized = ranges
+    .filter(
+      (r): r is TimeRange =>
+        !!r &&
+        typeof r.start === 'string' &&
+        typeof r.end === 'string' &&
+        /^\d{2}:\d{2}$/.test(r.start) &&
+        /^\d{2}:\d{2}$/.test(r.end),
+    )
+    .map((r) => ({ start: r.start, end: r.end }));
+  RNDA!.userDefaultsSet(IOS_USERDEFAULTS_QUIET_HOURS, JSON.stringify(sanitized));
+}
+
+/** Read-back of the quiet-hour ranges from App Group. Returns [] on miss. */
+export function getQuietHoursForIos(): { start: string; end: string }[] {
+  if (!isSupported()) return [];
+  const raw = RNDA!.userDefaultsGet<string>(IOS_USERDEFAULTS_QUIET_HOURS);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (e: any): e is { start: string; end: string } =>
+        typeof e?.start === 'string' && typeof e?.end === 'string',
+    );
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Apps the user has explicitly disarmed in the home-page Triggers editor.
+ * Each entry is a normalizeTriggerKey() canonical key (lowercased,
+ * whitespace + scheme suffix stripped, NFKD). Replace-the-list-on-every-
+ * change semantics; same as Android's setQuietHours / setMonitoringWindows.
+ */
+export function setDisarmedKeysForIos(keys: string[]): void {
+  if (!isSupported()) return;
+  const normalized = Array.from(
+    new Set(keys.map(normalizeTriggerKey).filter((k) => k.length > 0)),
+  );
+  RNDA!.userDefaultsSet(
+    IOS_USERDEFAULTS_DISARMED_KEYS,
+    JSON.stringify(normalized),
+  );
+}
+
+/** Read-back. Returns [] when nothing is disarmed (the default state). */
+export function getDisarmedKeysForIos(): string[] {
+  if (!isSupported()) return [];
+  const raw = RNDA!.userDefaultsGet<string>(IOS_USERDEFAULTS_DISARMED_KEYS);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((e: any): e is string => typeof e === 'string');
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Per-app monitoring windows. Apps not in this map are unrestricted (24/7).
+ * Apps with an entry are silent OUTSIDE the listed window(s) on the listed
+ * day(s). Multi-window per app supported (e.g. 09:00–12:00 + 14:00–17:00
+ * weekdays). daysOfWeek is 1=Mon..7=Sun (omit for all days).
+ *
+ * Keys are normalizeTriggerKey() canonicals to match what
+ * ShouldSilencePauseIntent looks up.
+ */
+export function setAppWindowsForIos(
+  windows: Record<
+    string,
+    { start: string; end: string; daysOfWeek?: number[] }[]
+  >,
+): void {
+  if (!isSupported()) return;
+  const cleaned: Record<
+    string,
+    { start: string; end: string; daysOfWeek?: number[] }[]
+  > = {};
+  for (const [rawKey, entries] of Object.entries(windows)) {
+    const key = normalizeTriggerKey(rawKey);
+    if (!key) continue;
+    const valid = entries.filter(
+      (e) =>
+        e &&
+        typeof e.start === 'string' &&
+        typeof e.end === 'string' &&
+        /^\d{2}:\d{2}$/.test(e.start) &&
+        /^\d{2}:\d{2}$/.test(e.end),
+    );
+    if (valid.length > 0) cleaned[key] = valid;
+  }
+  RNDA!.userDefaultsSet(
+    IOS_USERDEFAULTS_APP_WINDOWS,
+    JSON.stringify(cleaned),
+  );
+}
+
+/** Read-back of per-app windows. Returns {} when nothing is configured. */
+export function getAppWindowsForIos(): Record<
+  string,
+  { start: string; end: string; daysOfWeek?: number[] }[]
+> {
+  if (!isSupported()) return {};
+  const raw = RNDA!.userDefaultsGet<string>(IOS_USERDEFAULTS_APP_WINDOWS);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return parsed as Record<
+      string,
+      { start: string; end: string; daysOfWeek?: number[] }[]
+    >;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Build the per-app windows map from the current trackedApps list. Mirrors
+ * Android's `deriveMonitoringWindows` but in HH:mm string shape (not
+ * minutes-since-midnight) so the iOS Swift side can use the same JSON
+ * format throughout.
+ *
+ * Keys are normalizeTriggerKey() canonicals derived from each app's
+ * iosBundleId (preferred — what Personal Automations pass through), then
+ * label (fallback when bundleId is unknown — Apple sometimes ships the
+ * display name as the trigger reference).
+ */
+export function deriveAppWindowsForIos(
+  apps: Array<{
+    label?: string;
+    iosBundleId?: string;
+    monitoringWindow?: MonitoringWindow;
+  }>,
+): Record<string, { start: string; end: string; daysOfWeek?: number[] }[]> {
+  const out: Record<
+    string,
+    { start: string; end: string; daysOfWeek?: number[] }[]
+  > = {};
+  for (const app of apps) {
+    const w = app.monitoringWindow;
+    if (!w) continue;
+    // Stamp the entry under BOTH the bundleId-derived key AND the label-
+    // derived key. Personal Automations pass either depending on iOS
+    // version + how the user wired Shortcut Input. Cheap insurance.
+    const keys = [app.iosBundleId, app.label]
+      .filter((s): s is string => !!s && s.length > 0)
+      .map(normalizeTriggerKey)
+      .filter((k) => k.length > 0);
+    for (const key of keys) {
+      const entry: { start: string; end: string; daysOfWeek?: number[] } = {
+        start: w.start,
+        end: w.end,
+      };
+      if (w.daysOfWeek && w.daysOfWeek.length > 0) {
+        entry.daysOfWeek = w.daysOfWeek;
+      }
+      out[key] = [entry];
+    }
+  }
+  return out;
+}
+
+/**
+ * Stamp the trigger-app context the OpenDopaMenuPauseIntent receives from
+ * Shortcut Input. Read by the JS handoff handler so PostHog gets the actual
+ * triggering app instead of `triggerApp: 'unknown'` (the v18 placeholder).
+ *
+ * Returns the raw Shortcut-Input value the user's Personal Automation
+ * passed (could be a bundle id, display name, or scheme prefix — Apple
+ * doesn't standardize this), normalized to a canonical key, AND the raw
+ * value for analytics. Clears both keys after read so the same handoff
+ * isn't consumed twice.
+ */
+export function consumeAutomationTriggerApp(): {
+  raw: string;
+  key: string;
+} | null {
+  if (!isSupported()) return null;
+  const raw =
+    RNDA!.userDefaultsGet<string>(IOS_USERDEFAULTS_AUTOMATION_TRIGGER_APP) ?? '';
+  if (!raw) return null;
+  RNDA!.userDefaultsRemove(IOS_USERDEFAULTS_AUTOMATION_TRIGGER_APP);
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  return { raw: trimmed, key: normalizeTriggerKey(trimmed) };
+}
+
+/** Pure read — does NOT clear. Used for diagnostics / analytics-only paths. */
+export function peekAutomationTriggerApp(): string {
+  if (!isSupported()) return '';
+  return (
+    RNDA!.userDefaultsGet<string>(IOS_USERDEFAULTS_AUTOMATION_TRIGGER_APP) ?? ''
+  );
+}
+
+// ─── JS-side mirrors of ShouldSilencePauseIntent's gate logic ────────────
+//
+// Why we mirror in JS: the user's hosted Pause Shortcut won't include the
+// Swift silence gate until they re-import the updated wrapper from iCloud.
+// In the meantime, the user's existing v18 wrapper still calls
+// OpenDopaMenuPauseIntent → DopaMenu foregrounds → handleAutomationHandoff
+// runs. We catch silence conditions HERE so the user's quiet hours / pause
+// / disarm settings work immediately, even on un-re-imported Shortcuts.
+//
+// All checks must stay in lockstep with their Swift counterparts in
+// DopaMenuAppIntents.swift's ShouldSilencePauseIntent. Divergence means
+// inconsistent behavior depending on whether the user has re-imported.
+
+/** True when now() falls inside any user-configured quiet-hour range. */
+export function isInQuietHoursJs(): boolean {
+  if (!isSupported()) return false;
+  const ranges = getQuietHoursForIos();
+  if (ranges.length === 0) return false;
+  const now = new Date();
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  for (const r of ranges) {
+    const startMin = parseHHMMToMinutesLocal(r.start);
+    const endMin = parseHHMMToMinutesLocal(r.end);
+    if (startMin == null || endMin == null) continue;
+    const inRange =
+      startMin <= endMin
+        ? nowMinutes >= startMin && nowMinutes < endMin
+        : nowMinutes >= startMin || nowMinutes < endMin;
+    if (inRange) return true;
+  }
+  return false;
+}
+
+/** True when the named trigger app (or its normalized key) is disarmed. */
+export function isAppDisarmedJs(triggerApp: string): boolean {
+  if (!isSupported()) return false;
+  const key = normalizeTriggerKey(triggerApp);
+  if (!key) return false;
+  return getDisarmedKeysForIos().includes(key);
+}
+
+/**
+ * True when the named trigger app has monitoring windows configured AND
+ * now() is OUTSIDE all of them. (Apps without configured windows return
+ * false — they're 24/7 monitored.) Day-of-week filter in 1=Mon..7=Sun.
+ */
+export function isOutsideAppWindowJs(triggerApp: string): boolean {
+  if (!isSupported()) return false;
+  const key = normalizeTriggerKey(triggerApp);
+  if (!key) return false;
+  const windows = getAppWindowsForIos()[key];
+  if (!windows || windows.length === 0) return false;
+  const now = new Date();
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  // JS Date.getDay(): 0=Sun..6=Sat. Translate to our 1=Mon..7=Sun.
+  const jsDay = now.getDay();
+  const translatedDow = ((jsDay + 6) % 7) + 1;
+  for (const w of windows) {
+    if (w.daysOfWeek && w.daysOfWeek.length > 0 && !w.daysOfWeek.includes(translatedDow)) {
+      continue;
+    }
+    const startMin = parseHHMMToMinutesLocal(w.start);
+    const endMin = parseHHMMToMinutesLocal(w.end);
+    if (startMin == null || endMin == null) continue;
+    const inWindow =
+      startMin <= endMin
+        ? nowMinutes >= startMin && nowMinutes < endMin
+        : nowMinutes >= startMin || nowMinutes < endMin;
+    if (inWindow) return false; // we ARE inside one window — not silenced
+  }
+  return true; // App has windows but we're outside all of them — silenced.
+}
+
+/**
+ * Composite silence check. Mirrors ShouldSilencePauseIntent.perform().
+ * Returns true (silence the Shortcut path) when ANY gate hits:
+ *   • paused (suppressedUntil > now)
+ *   • inside quiet hours
+ *   • app is disarmed
+ *   • app has monitoring windows and we're outside them
+ *
+ * Pass an empty triggerApp to check ONLY the global gates (paused + quiet).
+ */
+export function shouldSilenceForTriggerJs(triggerApp: string): boolean {
+  if (!isSupported()) return false;
+  if (isPaused()) return true;
+  if (isInQuietHoursJs()) return true;
+  if (!triggerApp) return false;
+  if (isAppDisarmedJs(triggerApp)) return true;
+  if (isOutsideAppWindowJs(triggerApp)) return true;
+  return false;
+}
+
+// ─── Quiet-hours auto-pause (Shield-side enforcement) ─────────────────────
+//
+// The Shield is a native enforcement that lives in the kingstinct extension
+// and doesn't consult our App Group every fire — Apple's framework gates it
+// purely on the FamilyActivitySelection. To make quiet hours TRULY silent
+// (no Shield friction), we use the existing pause mechanism: when JS detects
+// we're inside a quiet window, call pauseBlockingFor for the remaining quiet
+// duration. The DeviceActivityMonitor extension auto-rearms when the
+// suppression window expires (= when quiet hours end), without needing the
+// host app to be running.
+//
+// Called from _layout.tsx on (a) boot, (b) AppState 'active', (c) userStore
+// preferences subscription so config edits take effect immediately. Cheap
+// no-op when not in quiet hours; idempotent when already paused longer.
+
+/**
+ * Returns the number of milliseconds remaining in the current quiet-hour
+ * range, or 0 if not in a quiet hour. Crosses midnight cleanly.
+ */
+export function msUntilQuietHoursEnd(
+  ranges: { start: string; end: string }[],
+): number {
+  if (!ranges || ranges.length === 0) return 0;
+  const now = new Date();
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  for (const r of ranges) {
+    const startMin = parseHHMMToMinutesLocal(r.start);
+    const endMin = parseHHMMToMinutesLocal(r.end);
+    if (startMin == null || endMin == null) continue;
+    const inRange =
+      startMin <= endMin
+        ? nowMinutes >= startMin && nowMinutes < endMin
+        : nowMinutes >= startMin || nowMinutes < endMin;
+    if (!inRange) continue;
+    // Compute ms until the END of THIS range, accounting for overnight wraps.
+    let endHour = Math.floor(endMin / 60);
+    const endMinute = endMin % 60;
+    const endDate = new Date(now);
+    endDate.setHours(endHour, endMinute, 0, 0);
+    if (endDate.getTime() <= now.getTime()) {
+      // End is earlier in the day than now → end is tomorrow (overnight wrap).
+      endDate.setDate(endDate.getDate() + 1);
+    }
+    const remaining = endDate.getTime() - now.getTime();
+    return Math.max(0, remaining);
+  }
+  return 0;
+}
+
+/**
+ * Idempotent: if we're inside quiet hours AND the current pause is shorter
+ * than the time remaining, extend the pause to cover the rest of the quiet
+ * window. No-op when:
+ *   • not in quiet hours
+ *   • already paused longer than the quiet window remaining
+ *   • the iOS native bridge isn't available
+ */
+export async function ensureQuietHoursPause(
+  ranges: { start: string; end: string }[],
+): Promise<void> {
+  if (!isSupported()) return;
+  const remaining = msUntilQuietHoursEnd(ranges);
+  if (remaining <= 0) return;
+  const currentlyPausedUntil = pausedUntil();
+  const desiredUntil = Date.now() + remaining;
+  if (currentlyPausedUntil >= desiredUntil) return;
+  await pauseBlockingFor(remaining);
+}
+
+/** HH:mm → minutes since midnight, or null on malformed input. */
+function parseHHMMToMinutesLocal(s: string): number | null {
+  if (!s || typeof s !== 'string') return null;
+  const m = /^(\d{1,2}):(\d{2})$/.exec(s);
+  if (!m) return null;
+  const h = parseInt(m[1]!, 10);
+  const mm = parseInt(m[2]!, 10);
+  if (h < 0 || h > 23 || mm < 0 || mm > 59) return null;
+  return h * 60 + mm;
 }

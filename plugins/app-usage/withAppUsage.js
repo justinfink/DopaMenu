@@ -252,6 +252,7 @@ import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
 import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import java.util.Calendar
 import java.util.concurrent.ConcurrentHashMap
 
 class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
@@ -301,6 +302,71 @@ class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
         // short enough that a deliberate re-launch isn't silently dropped.
         val suppressedUntil: ConcurrentHashMap<String, Long> = ConcurrentHashMap()
 
+        // Per-package time-of-day window. When a package has an entry, the
+        // intervention is only allowed to fire while now() is inside the
+        // window (and, optionally, inside the listed days of the week).
+        // Empty map means "no window restrictions" — every monitored app
+        // dispatches whenever it's foregrounded. Pushed from JS via
+        // setMonitoringWindows; checked from shouldDispatchIntervention.
+        data class MonitoringWindow(
+            val startMinutes: Int,        // 0..1439, minutes from midnight
+            val endMinutes: Int,          // 0..1439; can be < start for overnight
+            val daysOfWeek: Set<Int>?     // 1=Mon..7=Sun; null = any day
+        )
+
+        val monitoringWindows: ConcurrentHashMap<String, MonitoringWindow> =
+            ConcurrentHashMap()
+
+        fun isInMonitoringWindow(packageName: String): Boolean {
+            val window = monitoringWindows[packageName] ?: return true
+            val cal = Calendar.getInstance()
+
+            // Calendar.DAY_OF_WEEK is 1=Sun..7=Sat. Translate to our 1=Mon..7=Sun.
+            val rawDow = cal.get(Calendar.DAY_OF_WEEK)
+            val translatedDow = ((rawDow + 5) % 7) + 1
+            val days = window.daysOfWeek
+            if (days != null && days.isNotEmpty() && !days.contains(translatedDow)) {
+                return false
+            }
+
+            val nowMinutes =
+                cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+            return if (window.startMinutes <= window.endMinutes) {
+                nowMinutes in window.startMinutes..window.endMinutes
+            } else {
+                // Overnight range, e.g. 22:00 → 07:00.
+                nowMinutes >= window.startMinutes || nowMinutes <= window.endMinutes
+            }
+        }
+
+        // User-configured quiet hours. Replaces the previous JS-only check
+        // that was bypassed by every native dispatch path. When now() falls
+        // inside any range, ALL intervention dispatches (Accessibility-driven
+        // overlay, FGS-poll notification, FGS-poll direct activity launch)
+        // silently drop. Pushed from JS via setQuietHours; rebuilt whenever
+        // the user adds/removes/edits a range.
+        data class QuietHourRange(val startMinutes: Int, val endMinutes: Int)
+
+        @Volatile var quietHours: List<QuietHourRange> = emptyList()
+
+        fun isInAnyQuietHour(): Boolean {
+            val ranges = quietHours
+            if (ranges.isEmpty()) return false
+            val cal = Calendar.getInstance()
+            val nowMinutes =
+                cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+            for (range in ranges) {
+                val inRange = if (range.startMinutes <= range.endMinutes) {
+                    nowMinutes in range.startMinutes..range.endMinutes
+                } else {
+                    // Overnight range, e.g. 22:00 → 07:00.
+                    nowMinutes >= range.startMinutes || nowMinutes <= range.endMinutes
+                }
+                if (inRange) return true
+            }
+            return false
+        }
+
         fun isSuppressed(packageName: String): Boolean {
             val until = suppressedUntil[packageName] ?: return false
             if (System.currentTimeMillis() >= until) {
@@ -324,6 +390,15 @@ class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
          */
         fun shouldDispatchIntervention(packageName: String): Boolean {
             if (isSuppressed(packageName)) return false
+            // Per-app time-of-day gate. Single chokepoint covers BOTH the
+            // AccessibilityService path AND the FGS poller because both call
+            // through here before dispatching. Outside the window → silent
+            // drop, no intervention, no notification.
+            if (!isInMonitoringWindow(packageName)) return false
+            // Global quiet-hours gate. Same chokepoint logic — when the user
+            // is inside any quiet-hour range, no intercept fires from any
+            // path. JS keeps this map fresh via setQuietHours.
+            if (isInAnyQuietHour()) return false
             val now = SystemClock.elapsedRealtime()
             if (now - lastInterventionDispatchAt < INTERVENTION_DEBOUNCE_MS) return false
             lastInterventionDispatchAt = now
@@ -427,6 +502,55 @@ class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
         try {
             val intent = Intent(reactApplicationContext, AppUsageMonitorService::class.java)
             reactApplicationContext.stopService(intent)
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
+
+    // JS pushes the user's quiet-hour ranges here. Same pattern as
+    // setMonitoringWindows — full-state replacement, JS owns the source of
+    // truth, native gates dispatch on the parsed list. Each entry is
+    // { startMinutes, endMinutes }. Empty list = no quiet hours.
+    @ReactMethod
+    fun setQuietHours(ranges: ReadableArray, promise: Promise) {
+        try {
+            val parsed = mutableListOf<QuietHourRange>()
+            for (i in 0 until ranges.size()) {
+                val r = ranges.getMap(i) ?: continue
+                if (!r.hasKey("startMinutes") || !r.hasKey("endMinutes")) continue
+                parsed.add(QuietHourRange(r.getInt("startMinutes"), r.getInt("endMinutes")))
+            }
+            quietHours = parsed
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message)
+        }
+    }
+
+    // JS pushes the per-package time-of-day windows here. Replaces the entire
+    // map atomically — JS sends the canonical state on every preferences
+    // change, no diffing on the native side. Shape: { packageName: { startMinutes,
+    // endMinutes, daysOfWeek? } }. Days are 1=Mon..7=Sun (omit or null = all
+    // days). Apps without an entry are unrestricted.
+    @ReactMethod
+    fun setMonitoringWindows(windows: ReadableMap, promise: Promise) {
+        try {
+            monitoringWindows.clear()
+            val keys = windows.keySetIterator()
+            while (keys.hasNextKey()) {
+                val pkg = keys.nextKey()
+                val w = windows.getMap(pkg) ?: continue
+                if (!w.hasKey("startMinutes") || !w.hasKey("endMinutes")) continue
+                val start = w.getInt("startMinutes")
+                val end = w.getInt("endMinutes")
+                val days: Set<Int>? = if (w.hasKey("daysOfWeek") && !w.isNull("daysOfWeek")) {
+                    val arr = w.getArray("daysOfWeek")
+                    if (arr == null) null
+                    else (0 until arr.size()).map { i -> arr.getInt(i) }.toSet()
+                } else null
+                monitoringWindows[pkg] = MonitoringWindow(start, end, days)
+            }
             promise.resolve(null)
         } catch (e: Exception) {
             promise.reject("ERROR", e.message)

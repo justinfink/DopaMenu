@@ -947,6 +947,42 @@ export function getAppById(id: string): AppCatalogEntry | undefined {
   return APP_CATALOG.find((a) => a.id === id);
 }
 
+/**
+ * Match an opaque "trigger app" string from a Personal Automation against the
+ * catalog. The Shortcut Input can come through as a bundle id, display name,
+ * scheme prefix, or empty — Apple doesn't standardize the type. We normalize
+ * (lowercase, strip scheme suffix, NFKD, strip whitespace) and compare against
+ * each entry's bundleId, label, scheme, and id.
+ *
+ * Same normalization as src/services/iosFamilyControls.normalizeTriggerKey
+ * AND DopaMenuAppIntents.swift's normalizeTriggerKey. Keep these in lockstep
+ * (a divergence here means we can't resolve the trigger to a known app and
+ * lose the per-app silence + analytics context).
+ */
+export function findCatalogEntryByTriggerKey(
+  rawTrigger: string,
+): AppCatalogEntry | undefined {
+  if (!rawTrigger) return undefined;
+  const norm = (s: string | undefined) =>
+    !s
+      ? ''
+      : s
+          .normalize('NFKD')
+          .replace(/:\/\/$/, '')
+          .replace(/:$/, '')
+          .replace(/\s+/g, '')
+          .toLowerCase();
+  const target = norm(rawTrigger);
+  if (!target) return undefined;
+  return APP_CATALOG.find(
+    (a) =>
+      norm(a.iosBundleId) === target ||
+      norm(a.label) === target ||
+      norm(a.iosScheme) === target ||
+      norm(a.id) === target,
+  );
+}
+
 export function getAppsByRole(role: 'problem' | 'redirect'): AppCatalogEntry[] {
   return APP_CATALOG.filter((a) => a.role === role || a.role === 'both');
 }

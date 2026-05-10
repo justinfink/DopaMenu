@@ -11,15 +11,23 @@ import { deriveQuietHourRanges } from '../src/services/appUsage';
 import {
   clearAutomationBounceIfExpired,
   consumeAutomationHandoff,
-  hasProblemAppSelection,
-  getAuthorizationStatus as getFamilyControlsStatus,
-  peekAutomationBounce,
-  startBlocking as startIosBlocking,
-  recordShieldTrigger,
-  shouldShowIntervention,
-  markInterventionShown,
+  consumeAutomationTriggerApp,
+  deriveAppWindowsForIos,
+  ensureQuietHoursPause,
   ensureShieldArmedIfWindowExpired,
+  getAuthorizationStatus as getFamilyControlsStatus,
+  hasProblemAppSelection,
+  markInterventionShown,
+  peekAutomationBounce,
+  recordShieldTrigger,
+  setAppWindowsForIos,
+  setDisarmedKeysForIos,
+  setQuietHoursForIos,
+  shouldShowIntervention,
+  shouldSilenceForTriggerJs,
+  startBlocking as startIosBlocking,
 } from '../src/services/iosFamilyControls';
+import { findCatalogEntryByTriggerKey } from '../src/constants/appCatalog';
 import { simulateSituation, generateIntervention } from '../src/engine/InterventionEngine';
 import { buildCandidatePool, launchOrShow } from '../src/services/interventionResolver';
 import { colors } from '../src/constants/theme';
@@ -129,6 +137,44 @@ export default function RootLayout() {
           console.warn('[iOSFamilyControls] boot re-arm failed', err);
         }
       }
+
+      // iOS v19: push dynamic-state mirrors to App Group at boot so the
+      // Pause Shortcut's silence gate sees the latest values on the very
+      // first fire after install/restart — no race between user opening a
+      // tracked app and our subscription writing the state. Cheap; same
+      // shape we re-push on every preferences change in the userStore
+      // subscription below.
+      if (Platform.OS === 'ios') {
+        try {
+          setQuietHoursForIos(currentUser.preferences.quietHours);
+          const enabledTracked = currentUser.preferences.trackedApps.filter(
+            (a) => !a.enabled,
+          );
+          // Disarmed = trackedApps with enabled=false. Each app contributes
+          // every key shape we might see from the Shortcut (bundleId, label,
+          // catalogId, packageName) so the Swift normalizer matches whatever
+          // Shortcut Input passes through.
+          const disarmedKeys: string[] = [];
+          for (const a of enabledTracked) {
+            if (a.iosBundleId) disarmedKeys.push(a.iosBundleId);
+            if (a.label) disarmedKeys.push(a.label);
+            if (a.catalogId) disarmedKeys.push(a.catalogId);
+            if (a.packageName) disarmedKeys.push(a.packageName);
+          }
+          setDisarmedKeysForIos(disarmedKeys);
+          setAppWindowsForIos(
+            deriveAppWindowsForIos(currentUser.preferences.trackedApps),
+          );
+          // If the user is currently inside a quiet window, drop the Shield
+          // for the rest of that window. The DeviceActivityMonitor's
+          // suppressionExpired event will re-arm exactly when quiet hours
+          // end — even if DopaMenu isn't running. Idempotent; no-op when
+          // not in quiet hours or already paused longer.
+          await ensureQuietHoursPause(currentUser.preferences.quietHours);
+        } catch (err) {
+          console.warn('[iOSFamilyControls] v19 state push failed', err);
+        }
+      }
     }
 
     setupServices();
@@ -187,12 +233,50 @@ export default function RootLayout() {
       } catch {
         return;
       }
+
+      // v19: read the trigger app passed through Shortcut Input →
+      // OpenDopaMenuPauseIntent → App Group. May be empty when the user
+      // hasn't bound Shortcut Input as a parameter on the AppIntent step
+      // (their Shortcut still works, just with no per-app context).
+      let triggerInfo: { raw: string; key: string } | null = null;
+      try { triggerInfo = consumeAutomationTriggerApp(); } catch {}
+      const triggerRaw = triggerInfo?.raw ?? '';
+
+      // v19 silence gate (JS-side mirror). The user's Pause Shortcut may not
+      // yet include the Swift ShouldSilencePauseIntent gate (re-import lag).
+      // We check the same conditions JS-side: quiet hours, paused, app
+      // disarmed, outside per-app monitoring window. If any fire, we route
+      // back to the trigger app silently instead of showing the menu.
+      if (shouldSilenceForTriggerJs(triggerRaw)) {
+        analyticsService.track(AnalyticsEvents.INTERVENTION_SHOWN, {
+          trigger: 'ios_automation_silenced',
+          triggerApp: triggerRaw || 'unknown',
+        });
+        // Try to bounce back to the trigger app. If we can resolve a URL
+        // scheme, openURL it so the user lands where they were going. If
+        // we can't, drop them on the home tab — better than the menu
+        // during quiet hours.
+        const catalogEntry = triggerRaw
+          ? findCatalogEntryByTriggerKey(triggerRaw)
+          : undefined;
+        const scheme = catalogEntry?.iosScheme;
+        if (scheme) {
+          void Linking.openURL(scheme).catch(() => {
+            router.replace('/(tabs)');
+          });
+        } else {
+          router.replace('/(tabs)');
+        }
+        return;
+      }
+
       // Debounce: if a Shield-source intervention or another automation
       // handoff just fired in the last 5s, don't double-fire.
       if (!shouldShowIntervention()) return;
       markInterventionShown();
       analyticsService.track(AnalyticsEvents.INTERVENTION_SHOWN, {
         trigger: 'ios_automation',
+        triggerApp: triggerRaw || 'unknown',
       });
       // Mark setup as complete the first time the automation actually fires.
       // We never want to keep nagging the user about setup once it works.
@@ -200,17 +284,27 @@ export default function RootLayout() {
         const { updatePreferences } = useUserStore.getState();
         updatePreferences({ iosAutomationConfigured: true });
       }
-      // The automation doesn't tell us *which* tracked app fired it (Apple
-      // doesn't pipe that through the AppIntent perform context yet), so
-      // we surface a generic intervention with no specific trigger label.
-      // The redirect engine still picks a personalized alternative.
+
+      // v19: try to resolve the triggering app from the catalog so the
+      // intervention has app-specific context (alternatives can be biased
+      // by category, the Continue path knows the right URL scheme, etc.).
+      // Falls back to the v18 generic situation when the trigger is empty
+      // or doesn't match the catalog.
+      const triggerEntry = triggerRaw
+        ? findCatalogEntryByTriggerKey(triggerRaw)
+        : undefined;
+      let triggerPackageName: string | undefined =
+        triggerEntry?.androidPackage ?? triggerEntry?.iosBundleId ?? undefined;
+      const triggerLabel = triggerEntry?.label;
+
       const situation = simulateSituation();
       const decision = generateIntervention(
         situation,
         currentUser,
         buildPool(),
+        triggerPackageName ? { triggerPackageName } : undefined,
       );
-      showIntervention(decision, situation, undefined, undefined);
+      showIntervention(decision, situation, triggerPackageName, triggerLabel);
       router.push('/intervention');
     };
     // Refresh the Android home screen widget whenever an outcome is recorded
@@ -233,10 +327,24 @@ export default function RootLayout() {
           const quietChanged =
             state.user?.preferences.quietHours !==
             prev.user?.preferences.quietHours;
+          const trackedAppsChanged =
+            state.user?.preferences.trackedApps !==
+            prev.user?.preferences.trackedApps;
           if (quietChanged) {
             if (Platform.OS === 'android') {
               void appUsageService.setQuietHours(
                 deriveQuietHourRanges(state.user?.preferences.quietHours ?? []),
+              );
+            }
+            // iOS v19: mirror quiet hours into App Group so the silence
+            // gate (and JS-side guard) sees the new ranges immediately.
+            // Also auto-pause the Shield if the user just edited a range
+            // such that we're now inside one — Shield drops, monitor
+            // re-arms when quiet hours end.
+            if (Platform.OS === 'ios') {
+              setQuietHoursForIos(state.user?.preferences.quietHours ?? []);
+              void ensureQuietHoursPause(
+                state.user?.preferences.quietHours ?? [],
               );
             }
             // Re-schedule reminders so any newly-quiet time is dropped and
@@ -252,6 +360,24 @@ export default function RootLayout() {
               );
             }
           }
+          // iOS v19: re-mirror disarmed apps + per-app windows whenever
+          // trackedApps changes. Toggling Instagram off in QuickEditPanel
+          // flips a.enabled → we add Instagram's keys to disarmedKeys →
+          // ShouldSilencePauseIntent halts the Shortcut on the next
+          // Instagram tap. No Shortcuts.app trip required.
+          if (trackedAppsChanged && Platform.OS === 'ios') {
+            const apps = state.user?.preferences.trackedApps ?? [];
+            const disarmed: string[] = [];
+            for (const a of apps) {
+              if (a.enabled) continue;
+              if (a.iosBundleId) disarmed.push(a.iosBundleId);
+              if (a.label) disarmed.push(a.label);
+              if (a.catalogId) disarmed.push(a.catalogId);
+              if (a.packageName) disarmed.push(a.packageName);
+            }
+            setDisarmedKeysForIos(disarmed);
+            setAppWindowsForIos(deriveAppWindowsForIos(apps));
+          }
         }
       },
     );
@@ -265,6 +391,17 @@ export default function RootLayout() {
         if (state === 'active') {
           handleAutomationHandoff();
           void refreshWidget();
+          // iOS v19: re-evaluate the quiet-hours auto-pause every time we
+          // foreground. Catches cases where the user came back into
+          // DopaMenu DURING their quiet window (e.g. they checked the time
+          // at 11pm while quiet hours start at 22:00) and the boot path
+          // didn't catch it because they weren't yet in a quiet window
+          // when DopaMenu last loaded.
+          if (Platform.OS === 'ios') {
+            void ensureQuietHoursPause(
+              currentUser.preferences.quietHours ?? [],
+            );
+          }
         }
       },
     );
@@ -402,6 +539,31 @@ export default function RootLayout() {
             }
             try { clearAutomationBounceIfExpired(); } catch {}
 
+            // v19 silence gate (also applies to iOS 15 path). The iOS 15
+            // shortcut is a single Open-URL action with no AppIntent
+            // gates available, so this JS check is the ONLY place the
+            // silence rules can fire for those users. Quiet hours +
+            // disarmed apps + paused state still work.
+            const triggerAppFromUrl = params.get('app') || '';
+            if (shouldSilenceForTriggerJs(triggerAppFromUrl)) {
+              analyticsService.track(AnalyticsEvents.INTERVENTION_SHOWN, {
+                trigger: 'ios_automation_url_silenced',
+                triggerApp: triggerAppFromUrl || 'unknown',
+              });
+              const catalogEntryDL = triggerAppFromUrl
+                ? findCatalogEntryByTriggerKey(triggerAppFromUrl)
+                : undefined;
+              const schemeDL = catalogEntryDL?.iosScheme;
+              if (schemeDL) {
+                void Linking.openURL(schemeDL).catch(() => {
+                  router.replace('/(tabs)');
+                });
+              } else {
+                router.replace('/(tabs)');
+              }
+              return;
+            }
+
             if (!shouldShowIntervention()) return;
             markInterventionShown();
             if (!currentUser.preferences.iosAutomationConfigured) {
@@ -410,6 +572,7 @@ export default function RootLayout() {
             }
             analyticsService.track(AnalyticsEvents.INTERVENTION_SHOWN, {
               trigger: 'ios_automation_url',
+              triggerApp: triggerAppFromUrl || 'unknown',
             });
           } else if (!triggerPackageName) {
             const iosBundleId = params.get('app') || undefined;

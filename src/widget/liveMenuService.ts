@@ -1,9 +1,26 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
 import { InterventionCandidate, Situation, SituationType, User } from '../models';
 import { generateIntervention } from '../engine/InterventionEngine';
 import { getInterventionPool } from '../constants/interventions';
 import { getTimeBucket, getGreeting } from '../utils/helpers';
 import type { TimeBucket } from '../models';
+
+// iOS widget shares App Group UserDefaults with the main app process — that's
+// the documented WidgetKit pattern. We import lazily so this module stays
+// importable on Android (where the bridge isn't built) without runtime errors.
+type RNDAModule = typeof import('react-native-device-activity');
+let RNDA: RNDAModule | null = null;
+if (Platform.OS === 'ios') {
+  try {
+    RNDA = require('react-native-device-activity') as RNDAModule;
+  } catch {
+    RNDA = null;
+  }
+}
+
+/** App Group key the iOS WidgetKit extension reads on every timeline refresh. */
+const IOS_WIDGET_USERDEFAULTS_KEY = 'iosWidgetMenuData';
 
 // ============================================
 // Live Menu Service
@@ -108,4 +125,86 @@ export async function getLiveMenuData(): Promise<LiveMenuData | null> {
     greeting: getGreeting(),
     explanation: decision.explanation,
   };
+}
+
+/**
+ * Project a LiveMenuData into the slim, widget-only shape that the iOS
+ * WidgetKit extension renders. We deliberately strip everything the widget
+ * doesn't need (modality vectors, situation IDs, etc.) so the extension's
+ * memory footprint stays small and the JSON write is cheap.
+ *
+ * The shape is the contract between JS and the Swift widget — if you change
+ * a field name here, update the matching field in
+ * `plugins/widget-ios/DopaMenuWidget.swift`'s `WidgetMenuData` struct, or
+ * the widget will silently render its placeholder.
+ */
+interface IosWidgetMenuPayload {
+  primary: { id: string; label: string; icon: string; effort: string };
+  alternatives: { id: string; label: string; icon: string; effort: string }[];
+  timeBucket: TimeBucket;
+  greeting: string;
+  /** Epoch ms — Swift uses this to decide whether to show stale-data hint. */
+  updatedAt: number;
+}
+
+function projectForIosWidget(data: LiveMenuData): IosWidgetMenuPayload {
+  const project = (c: InterventionCandidate) => ({
+    id: c.id,
+    label: c.label,
+    icon: c.icon ?? 'sparkles',
+    effort: String(c.requiredEffort ?? ''),
+  });
+  return {
+    primary: project(data.primary),
+    alternatives: data.alternatives.slice(0, 2).map(project),
+    timeBucket: data.timeBucket,
+    greeting: data.greeting,
+    updatedAt: Date.now(),
+  };
+}
+
+/**
+ * Serialize the live menu into App Group UserDefaults for the iOS WidgetKit
+ * extension. Idempotent + fast (a single string write); safe to call on
+ * every preferences change. No-op on Android.
+ *
+ * Expected callers:
+ *   • app/_layout.tsx's userStore subscription (mirrors how Android refreshes
+ *     the widget on prefs changes)
+ *   • interventionStore subscription (after an outcome fires — the menu
+ *     might re-rank)
+ *   • Pause / resume actions (paused state isn't in the payload but the
+ *     widget should reflect it via the same data shape)
+ */
+export async function writeIosWidgetData(): Promise<void> {
+  if (Platform.OS !== 'ios' || !RNDA) return;
+  try {
+    const data = await getLiveMenuData();
+    if (!data) {
+      // No user / not onboarded — clear stale data so the widget shows its
+      // placeholder rather than yesterday's stale recommendation.
+      RNDA.userDefaultsRemove(IOS_WIDGET_USERDEFAULTS_KEY);
+      return;
+    }
+    const payload = projectForIosWidget(data);
+    RNDA.userDefaultsSet(
+      IOS_WIDGET_USERDEFAULTS_KEY,
+      JSON.stringify(payload),
+    );
+    // Ask iOS to reload the timeline so the new data shows up on the widget
+    // immediately instead of waiting for the next system-scheduled refresh
+    // (which can be up to ~30 min out). The native module ignores the call
+    // when the WidgetKit bridge isn't built (older iOS, missing extension).
+    const NativeWidget = (require('react-native').NativeModules as any)
+      .DopaMenuWidget;
+    if (NativeWidget?.reloadAllTimelines) {
+      try {
+        NativeWidget.reloadAllTimelines();
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch (err) {
+    console.warn('[liveMenuService] writeIosWidgetData failed', err);
+  }
 }

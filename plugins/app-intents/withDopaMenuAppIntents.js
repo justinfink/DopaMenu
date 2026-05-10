@@ -27,6 +27,17 @@ const FILES = [
   { name: 'DopaMenuAppIntents.swift', type: 'sourcecode.swift' },
   { name: 'DopaMenuFamilyControls.swift', type: 'sourcecode.swift' },
   { name: 'DopaMenuFamilyControls.m', type: 'sourcecode.c.objc' },
+  // v19: reload-widget bridge. Lives in the MAIN app target (not the
+  // widget extension target) — main app is the producer of WidgetCenter
+  // calls, the widget extension is the consumer. App Group is shared
+  // between them via the iOS app's entitlement plus the widget target's
+  // own entitlement file. SAFE to ship even before the widget extension
+  // target exists: WidgetCenter.reloadAllTimelines() is a documented
+  // no-op when no widgets are placed (and harmless if the widget
+  // extension target is parked in plugins/widget-ios-pending/ — see the
+  // README there for v19.1 activation steps).
+  { name: 'DopaMenuWidgetReload.swift', type: 'sourcecode.swift' },
+  { name: 'DopaMenuWidgetReload.m', type: 'sourcecode.c.objc' },
 ];
 
 function withSourceFilesCopy(config) {

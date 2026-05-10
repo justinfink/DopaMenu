@@ -16,6 +16,11 @@ import { useUserStore } from '../../stores/userStore';
 import { useCustomInterventionsStore } from '../../stores/customInterventionsStore';
 import { appUsageService, deriveMonitoringWindows } from '../../services/appUsage';
 import {
+  setDisarmedKeysForIos,
+  setAppWindowsForIos,
+  deriveAppWindowsForIos,
+} from '../../services/iosFamilyControls';
+import {
   parseHHMM,
   rangesOverlap,
   formatHHMMForDisplay,
@@ -307,6 +312,22 @@ function TriggersEditor() {
       const enabled = updated.filter((a) => a.enabled);
       await appUsageService.startMonitoring(enabled);
     }
+    // iOS v19: also push the disarmed-key list to App Group so the Pause
+    // Shortcut's silence gate halts on disarmed apps. The userStore
+    // subscription in _layout.tsx ALSO does this — pushing here too
+    // means the change takes effect synchronously on this fire instead
+    // of waiting for the subscription tick.
+    if (Platform.OS === 'ios') {
+      const disarmed: string[] = [];
+      for (const a of updated) {
+        if (a.enabled) continue;
+        if (a.iosBundleId) disarmed.push(a.iosBundleId);
+        if (a.label) disarmed.push(a.label);
+        if (a.catalogId) disarmed.push(a.catalogId);
+        if (a.packageName) disarmed.push(a.packageName);
+      }
+      setDisarmedKeysForIos(disarmed);
+    }
   };
 
   return (
@@ -413,14 +434,22 @@ function AppAdvanced({ app }: { app: TrackedAppConfig }) {
   const persistWindow = (next: MonitoringWindow | null) => {
     setMonitoringWindow(app.packageName, next);
     // Push the entire windows map to native — the chokepoint reads from there
-    // for both AccessibilityService and FGS poller paths. Recompute from the
+    // for both AccessibilityService and FGS poller paths (Android), and the
+    // ShouldSilencePauseIntent App Group blob (iOS). Recompute from the
     // store snapshot we just mutated.
     const updatedApps = trackedApps.map((a) =>
       a.packageName === app.packageName
         ? { ...a, monitoringWindow: next ?? undefined }
         : a,
     );
-    void appUsageService.setMonitoringWindows(deriveMonitoringWindows(updatedApps));
+    if (Platform.OS === 'android') {
+      void appUsageService.setMonitoringWindows(deriveMonitoringWindows(updatedApps));
+    } else if (Platform.OS === 'ios') {
+      // v19: write the per-app windows to App Group. Pause Shortcut's
+      // silence gate consults this on every fire — outside the window
+      // means silenced.
+      setAppWindowsForIos(deriveAppWindowsForIos(updatedApps));
+    }
   };
 
   const toggle = () => {
@@ -448,16 +477,10 @@ function AppAdvanced({ app }: { app: TrackedAppConfig }) {
     persistWindow({ ...window, daysOfWeek: next.length === 7 ? undefined : next });
   };
 
-  if (Platform.OS !== 'android') {
-    return (
-      <View style={styles.advancedBody}>
-        <Text style={styles.helper}>
-          Per-app monitoring windows are Android-only. iOS uses the Shield or Shortcuts paths
-          (manage them in Settings).
-        </Text>
-      </View>
-    );
-  }
+  // iOS v19: same UI as Android. The window is written to the App Group's
+  // appWindows key; ShouldSilencePauseIntent reads it on every Pause
+  // Shortcut fire and halts when the user is outside the configured window.
+  // No platform branching — both surfaces drive the same dynamic state.
 
   return (
     <View style={styles.advancedBody}>
