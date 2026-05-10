@@ -144,6 +144,21 @@ struct IsBouncingIntent: AppIntent {
     guard let defaults = UserDefaults(suiteName: "group.ai.dopamenu.app") else {
       return .result(value: false)
     }
+
+    // v19 cross-binding: stamp automationTriggerApp from this intent too.
+    // Users on the existing v18 wrapper Shortcut bound Shortcut Input to
+    // *this* intent's triggerApp param (we instructed them to during the
+    // v18 wrapper build), but they did NOT bind it to OpenDopaMenuPauseIntent
+    // (that param didn't exist in v18). Stamping here means the JS-side
+    // silence gate gets per-app context even on un-edited v18 wrappers —
+    // disarmed-app and per-app-window gates work without any Shortcut.app
+    // edit. Harmless on the bounce path (the bounce JS handler reads
+    // peekAutomationBounce first and never consults automationTriggerApp).
+    let trimmedTrigger = triggerApp.trimmingCharacters(in: .whitespaces)
+    if !trimmedTrigger.isEmpty {
+      defaults.set(trimmedTrigger, forKey: "automationTriggerApp")
+    }
+
     // automationBounceUntil is JS-authored as epoch *milliseconds* (matches
     // Date.now() + window). Compare to nowMs accordingly. See the unit-
     // asymmetry note in src/constants/appGroup.ts — automationTriggeredAt
@@ -157,7 +172,7 @@ struct IsBouncingIntent: AppIntent {
     // window still intervenes correctly.
     let storedKey =
       defaults.string(forKey: "automationBounceTriggerKey") ?? ""
-    let passed = triggerApp.trimmingCharacters(in: .whitespaces)
+    let passed = trimmedTrigger
 
     if !passed.isEmpty && !storedKey.isEmpty {
       // Same normalization as JS's normalizeTriggerKey() in
