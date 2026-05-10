@@ -21,12 +21,13 @@ import {
   hasProblemAppSelection,
   markInterventionShown,
   peekAutomationBounce,
+  reconcileQuietPauseAfterEdit,
   recordShieldTrigger,
   setAppWindowsForIos,
   setDisarmedKeysForIos,
   setQuietHoursForIos,
   shouldShowIntervention,
-  shouldSilenceForTriggerJs,
+  silenceReasonForTriggerJs,
   startBlocking as startIosBlocking,
 } from '../src/services/iosFamilyControls';
 import { APP_CATALOG, findCatalogEntryByTriggerKey } from '../src/constants/appCatalog';
@@ -288,9 +289,11 @@ export default function RootLayout() {
       // We check the same conditions JS-side: quiet hours, paused, app
       // disarmed, outside per-app monitoring window. If any fire, we route
       // back to the trigger app silently instead of showing the menu.
-      if (shouldSilenceForTriggerJs(triggerRaw)) {
+      const handoffSilenceReason = silenceReasonForTriggerJs(triggerRaw);
+      if (handoffSilenceReason) {
         analyticsService.track(AnalyticsEvents.INTERVENTION_SHOWN, {
           trigger: 'ios_automation_silenced',
+          silenceReason: handoffSilenceReason,
           triggerApp: triggerRaw || 'unknown',
         });
         // Try to bounce back to the trigger app. If we can resolve a URL
@@ -381,12 +384,15 @@ export default function RootLayout() {
             // gate (and JS-side guard) sees the new ranges immediately.
             // Also auto-pause the Shield if the user just edited a range
             // such that we're now inside one — Shield drops, monitor
-            // re-arms when quiet hours end.
+            // re-arms when quiet hours end. AND, if the user just
+            // DELETED a range and the only thing keeping the Shield
+            // down was THAT range's auto-pause, reconcile clears it
+            // (manual pauses are left alone — the user wanted those).
             if (Platform.OS === 'ios') {
-              setQuietHoursForIos(state.user?.preferences.quietHours ?? []);
-              void ensureQuietHoursPause(
-                state.user?.preferences.quietHours ?? [],
-              );
+              const newRanges = state.user?.preferences.quietHours ?? [];
+              setQuietHoursForIos(newRanges);
+              void ensureQuietHoursPause(newRanges);
+              void reconcileQuietPauseAfterEdit(newRanges);
             }
             // Re-schedule reminders so any newly-quiet time is dropped and
             // any newly-unquiet time is restored. Only when the user has
@@ -589,9 +595,11 @@ export default function RootLayout() {
             // silence rules can fire for those users. Quiet hours +
             // disarmed apps + paused state still work.
             const triggerAppFromUrl = params.get('app') || '';
-            if (shouldSilenceForTriggerJs(triggerAppFromUrl)) {
+            const dlSilenceReason = silenceReasonForTriggerJs(triggerAppFromUrl);
+            if (dlSilenceReason) {
               analyticsService.track(AnalyticsEvents.INTERVENTION_SHOWN, {
                 trigger: 'ios_automation_url_silenced',
+                silenceReason: dlSilenceReason,
                 triggerApp: triggerAppFromUrl || 'unknown',
               });
               const catalogEntryDL = triggerAppFromUrl

@@ -144,3 +144,22 @@ export const IOS_USERDEFAULTS_APP_WINDOWS = 'appWindows';
  * id, display name, or scheme prefix). Cleared after consumption.
  */
 export const IOS_USERDEFAULTS_AUTOMATION_TRIGGER_APP = 'automationTriggerApp';
+
+/**
+ * What set the current `suppressedUntil` window. Three sources:
+ *   • 'manual' — the user tapped a Pause-for-X chip in the home page
+ *   • 'quiet'  — JS auto-paused for the rest of the current quiet window
+ *   • 'suppress' — the post-Continue suppression after intervention.tsx
+ *
+ * Used to decide whether a quiet-hours EDIT should clear the auto-pause.
+ * If the user removes a quiet range while the only thing keeping the
+ * Shield down is THAT quiet range's auto-pause (source='quiet'), we
+ * resume blocking immediately. If source='manual' (user explicitly
+ * paused 1h), we leave the pause alone — they wanted that, regardless
+ * of quiet-hour edits.
+ *
+ * Stored as a string — empty/missing is treated as 'unknown' (legacy
+ * builds had no source tag; we default to leaving the pause alone in
+ * that case to avoid a regression on existing users).
+ */
+export const IOS_USERDEFAULTS_SUPPRESSED_SOURCE = 'suppressedSource';

@@ -21,6 +21,7 @@ import {
   IOS_USERDEFAULTS_LAST_SHIELD_TRIGGER,
   IOS_USERDEFAULTS_QUIET_HOURS,
   IOS_USERDEFAULTS_SHIELD_ARMED_AT,
+  IOS_USERDEFAULTS_SUPPRESSED_SOURCE,
   IOS_USERDEFAULTS_SUPPRESSED_UNTIL,
 } from '../constants/appGroup';
 import type { MonitoringWindow, TimeRange } from '../models';
@@ -281,12 +282,22 @@ export async function startBlocking(opts: { force?: boolean } = {}): Promise<voi
  * hour" in settings). The DeviceActivityMonitor extension auto-rearms when
  * the duration expires — same mechanism as suppressBlocking, just with a
  * caller-chosen window instead of the standard 30s after-Continue.
+ *
+ * `source` lets the caller distinguish whether this pause was explicitly
+ * requested by the user ('manual', the default) or was set automatically
+ * by quiet-hours auto-pause ('quiet'). The userStore subscription on
+ * quiet-hour edits checks this so it only clears auto-pauses (leaving
+ * manual pauses alone — the user wanted those regardless of quiet hours).
  */
-export async function pauseBlockingFor(durationMs: number): Promise<void> {
+export async function pauseBlockingFor(
+  durationMs: number,
+  source: 'manual' | 'quiet' | 'suppress' = 'manual',
+): Promise<void> {
   if (!isSupported()) return;
   if (durationMs <= 0) return;
   const until = Date.now() + durationMs;
   RNDA!.userDefaultsSet(IOS_USERDEFAULTS_SUPPRESSED_UNTIL, until);
+  RNDA!.userDefaultsSet(IOS_USERDEFAULTS_SUPPRESSED_SOURCE, source);
   // Drop the shield for now; the monitor reapplies after the window.
   RNDA!.clearAllManagedSettingsStoreSettings();
   // Mark shield as un-armed so startBlocking will run fresh next time.
@@ -317,6 +328,7 @@ export async function pauseBlockingFor(durationMs: number): Promise<void> {
 export async function resumeBlocking(): Promise<void> {
   if (!isSupported()) return;
   RNDA!.userDefaultsRemove(IOS_USERDEFAULTS_SUPPRESSED_UNTIL);
+  RNDA!.userDefaultsRemove(IOS_USERDEFAULTS_SUPPRESSED_SOURCE);
   await startBlocking({ force: true });
 }
 
@@ -359,6 +371,11 @@ export async function suppressBlocking(tokenHash?: string): Promise<void> {
     RNDA!.userDefaultsSet(`${IOS_USERDEFAULTS_SUPPRESSED_UNTIL}_${tokenHash}`, until);
   }
   RNDA!.userDefaultsSet(IOS_USERDEFAULTS_SUPPRESSED_UNTIL, until);
+  // Source = 'suppress' so the quiet-hours subscription doesn't clear this
+  // when the user happens to edit quiet hours during the 30s post-Continue
+  // window. The user just hit Continue — they want Instagram open, not a
+  // re-armed Shield.
+  RNDA!.userDefaultsSet(IOS_USERDEFAULTS_SUPPRESSED_SOURCE, 'suppress');
 
   // Drop the shield so the target app opens without friction.
   RNDA!.clearAllManagedSettingsStoreSettings();
@@ -1018,13 +1035,37 @@ export function isOutsideAppWindowJs(triggerApp: string): boolean {
  * Pass an empty triggerApp to check ONLY the global gates (paused + quiet).
  */
 export function shouldSilenceForTriggerJs(triggerApp: string): boolean {
-  if (!isSupported()) return false;
-  if (isPaused()) return true;
-  if (isInQuietHoursJs()) return true;
-  if (!triggerApp) return false;
-  if (isAppDisarmedJs(triggerApp)) return true;
-  if (isOutsideAppWindowJs(triggerApp)) return true;
-  return false;
+  return silenceReasonForTriggerJs(triggerApp) !== null;
+}
+
+/**
+ * Silence reason. Like shouldSilenceForTriggerJs but returns WHICH gate
+ * fired, not just whether one did. Used for analytics so we can tell
+ * "ios_automation_silenced because user is paused" vs. "...because in
+ * quiet hours" vs. "...because Instagram is disarmed". Order of checks
+ * matches ShouldSilencePauseIntent.perform() in the Swift gate so the
+ * two emit consistent reasons (the Swift gate just returns Bool, but
+ * if we ever surface reason-codes through ReturnsValue<String> we'd
+ * order them the same).
+ *
+ * Returns null when no gate fires (= proceed with the modal).
+ */
+export type SilenceReason =
+  | 'paused'
+  | 'quiet_hours'
+  | 'disarmed'
+  | 'outside_app_window';
+
+export function silenceReasonForTriggerJs(
+  triggerApp: string,
+): SilenceReason | null {
+  if (!isSupported()) return null;
+  if (isPaused()) return 'paused';
+  if (isInQuietHoursJs()) return 'quiet_hours';
+  if (!triggerApp) return null;
+  if (isAppDisarmedJs(triggerApp)) return 'disarmed';
+  if (isOutsideAppWindowJs(triggerApp)) return 'outside_app_window';
+  return null;
 }
 
 // ─── Quiet-hours auto-pause (Shield-side enforcement) ─────────────────────
@@ -1083,6 +1124,10 @@ export function msUntilQuietHoursEnd(
  *   • not in quiet hours
  *   • already paused longer than the quiet window remaining
  *   • the iOS native bridge isn't available
+ *
+ * Source = 'quiet' so the quiet-hours-edit handler can tell this pause
+ * apart from a manual user-initiated one and clear it cleanly when the
+ * user removes the quiet range.
  */
 export async function ensureQuietHoursPause(
   ranges: { start: string; end: string }[],
@@ -1093,7 +1138,46 @@ export async function ensureQuietHoursPause(
   const currentlyPausedUntil = pausedUntil();
   const desiredUntil = Date.now() + remaining;
   if (currentlyPausedUntil >= desiredUntil) return;
-  await pauseBlockingFor(remaining);
+  await pauseBlockingFor(remaining, 'quiet');
+}
+
+/**
+ * Read back the source tag of the current `suppressedUntil` window. Returns
+ * null when not paused. Used by the quiet-hours-edit handler to decide
+ * whether resuming makes sense (only when source='quiet' AND we're no
+ * longer in any quiet range).
+ */
+export function suppressedSource(): 'manual' | 'quiet' | 'suppress' | null {
+  if (!isSupported()) return null;
+  if (!isPaused()) return null;
+  const raw =
+    RNDA!.userDefaultsGet<string>(IOS_USERDEFAULTS_SUPPRESSED_SOURCE) ?? '';
+  if (raw === 'manual' || raw === 'quiet' || raw === 'suppress') return raw;
+  return null;
+}
+
+/**
+ * If the user just deleted/edited a quiet-hour range AND we're no longer
+ * inside any quiet window AND the current pause was set BY a quiet-hour
+ * auto-pause (source='quiet'), resume blocking immediately. Manual
+ * pauses (Pause-for-1h chip) are left alone — the user explicitly wanted
+ * those regardless of any quiet-hour edits.
+ *
+ * No-op when not paused, when paused for non-quiet reasons, or when
+ * we're still inside a quiet window. Idempotent — safe to call from
+ * the userStore subscription on every preferences change.
+ */
+export async function reconcileQuietPauseAfterEdit(
+  ranges: { start: string; end: string }[],
+): Promise<void> {
+  if (!isSupported()) return;
+  if (!isPaused()) return;
+  // Still inside a quiet window? leave the pause alone (it's still warranted).
+  if (msUntilQuietHoursEnd(ranges) > 0) return;
+  // Was the pause set by quiet-hours? If yes, resume now. Otherwise (manual
+  // or suppress), leave it.
+  if (suppressedSource() !== 'quiet') return;
+  await resumeBlocking();
 }
 
 /** HH:mm → minutes since midnight, or null on malformed input. */
