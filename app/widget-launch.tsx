@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { router } from 'expo-router';
 import { colors } from '../src/constants/theme';
+import { useInterventionStore } from '../src/stores/interventionStore';
 
 // Real route for dopamenu://widget-launch?id=...
 // The root deep-link listener performs the actual launch. This prevents Expo
@@ -9,6 +10,7 @@ import { colors } from '../src/constants/theme';
 export default function WidgetLaunchRoute() {
   useEffect(() => {
     const timeout = setTimeout(() => {
+      if (useInterventionStore.getState().activeIntervention) return;
       router.replace('/(tabs)');
     }, 1800);
     return () => clearTimeout(timeout);

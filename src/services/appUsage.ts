@@ -50,6 +50,7 @@ interface AppUsageModule {
   checkRestrictedSettingsGranted(): Promise<boolean>;
   startOnboardingWatch(target: string): Promise<void>;
   stopOnboardingWatch(): Promise<void>;
+  openAppPackage(packageName: string): Promise<boolean>;
   getDeviceProfile(): Promise<DeviceProfile>;
   suppressIntercept(packageName: string, durationMs: number): Promise<void>;
   setModalActive(active: boolean): Promise<void>;
@@ -424,6 +425,15 @@ export const appUsageService = {
     } catch (error) {
       console.error('[AppUsage] Failed to open app info:', error);
       await Linking.openSettings();
+    }
+  },
+
+  async openAppPackage(packageName: string): Promise<boolean> {
+    if (!this.isSupported() || !NativeAppUsage?.openAppPackage) return false;
+    try {
+      return await NativeAppUsage.openAppPackage(packageName);
+    } catch {
+      return false;
     }
   },
 

@@ -714,6 +714,23 @@ class DopaMenuAppUsageModule(reactContext: ReactApplicationContext) :
         }
     }
 
+    @ReactMethod
+    fun openAppPackage(packageName: String, promise: Promise) {
+        try {
+            val intent = reactApplicationContext.packageManager
+                .getLaunchIntentForPackage(packageName)
+            if (intent == null) {
+                promise.resolve(false)
+                return
+            }
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            reactApplicationContext.startActivity(intent)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.resolve(false)
+        }
+    }
+
     // Kicks off the foreground-service-driven onboarding watch. While JS is
     // backgrounded (user is in Settings), the service polls the target AppOp
     // every 500ms and, when it flips, uses its BAL-exempt startActivity

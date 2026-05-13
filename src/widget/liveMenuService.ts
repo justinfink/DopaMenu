@@ -46,6 +46,20 @@ function isLaunchable(c: InterventionCandidate): boolean {
   return !!(c.launchAppPackage || c.launchIosScheme || c.launchTarget);
 }
 
+function uniqueLaunchableCandidates(
+  candidates: InterventionCandidate[],
+  excludeIds: Set<string>,
+): InterventionCandidate[] {
+  const seen = new Set(excludeIds);
+  const result: InterventionCandidate[] = [];
+  for (const candidate of candidates) {
+    if (seen.has(candidate.id) || !isLaunchable(candidate)) continue;
+    seen.add(candidate.id);
+    result.push(candidate);
+  }
+  return result;
+}
+
 // Deterministic situation derived from the current time bucket. The widget
 // refreshes every 30 min and the home page re-reads on focus / store change;
 // both call this exact function, so both surfaces stay in lockstep — the
@@ -96,25 +110,29 @@ export async function getLiveMenuData(): Promise<LiveMenuData | null> {
   // on-phone item with no resolvable launch path. Eliminates the "tap does
   // nothing" footgun that bit the widget.
   let primary = decision.primary;
-  let alternatives = decision.alternatives.slice(0, 3);
+  let alternatives = uniqueLaunchableCandidates(
+    decision.alternatives,
+    new Set([primary.id]),
+  ).slice(0, 3);
   if (!isLaunchable(primary)) {
     const launchableAlt = decision.alternatives.find(isLaunchable);
     if (launchableAlt) {
       primary = launchableAlt;
-      alternatives = decision.alternatives
-        .filter((c) => c.id !== launchableAlt.id)
-        .slice(0, 3);
+      alternatives = uniqueLaunchableCandidates(
+        decision.alternatives,
+        new Set([launchableAlt.id]),
+      ).slice(0, 3);
     }
   }
 
   // Filter alternatives the same way — never render a row whose tap won't do
   // anything. Falls back to the first 3 launchable candidates from the pool
   // (excluding primary) if filtering empties the list.
-  alternatives = alternatives.filter(isLaunchable);
   if (alternatives.length < 3) {
-    const filler = pool
-      .filter((c) => c.id !== primary.id && isLaunchable(c))
-      .slice(0, 3 - alternatives.length);
+    const filler = uniqueLaunchableCandidates(
+      pool,
+      new Set([primary.id, ...alternatives.map((c) => c.id)]),
+    ).slice(0, 3 - alternatives.length);
     alternatives = [...alternatives, ...filler];
   }
 

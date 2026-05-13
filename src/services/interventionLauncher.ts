@@ -1,5 +1,6 @@
 import { Linking, Platform } from 'react-native';
 import { InterventionCandidate } from '../models';
+import { appUsageService } from './appUsage';
 
 // ============================================
 // Intervention launch logic — shared between the in-app intervention modal
@@ -44,6 +45,11 @@ export async function launchIntervention(
   if (!launchAppPackage && !launchIosScheme && !launchTarget) return false;
 
   if (Platform.OS === 'android' && launchAppPackage) {
+    if (!launchAndroidUri) {
+      const opened = await appUsageService.openAppPackage(launchAppPackage);
+      if (opened) return true;
+    }
+
     const intentUrl = buildAndroidIntentUrl(
       launchAppPackage,
       launchTarget,
@@ -53,6 +59,8 @@ export async function launchIntervention(
       await Linking.openURL(intentUrl);
       return true;
     } catch {
+      const opened = await appUsageService.openAppPackage(launchAppPackage);
+      if (opened) return true;
       // Fall through to web fallback below.
     }
   }
