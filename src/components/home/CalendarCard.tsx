@@ -5,6 +5,7 @@ import {
   Text,
   TouchableOpacity,
   View,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Card } from '..';
@@ -53,6 +54,14 @@ export function CalendarCard() {
     getInsight,
   } = useCalendarStore();
   const insight = getInsight();
+  const providerConfig = calendarService.getProviderConfig();
+  const googleAvailable =
+    Platform.OS === 'ios'
+      ? Boolean(providerConfig.googleIosClientId || providerConfig.googleWebClientId)
+      : Platform.OS === 'android'
+        ? Boolean(providerConfig.googleAndroidClientId || providerConfig.googleWebClientId)
+        : Boolean(providerConfig.googleWebClientId);
+  const outlookAvailable = Boolean(providerConfig.microsoftClientId);
 
   useEffect(() => {
     if (accounts.length > 0 && !lastSyncedAt && !isSyncing) {
@@ -153,12 +162,16 @@ export function CalendarCard() {
       {!connected ? (
         <View>
           <Text style={styles.body}>
-            Connect Google Calendar or Outlook so DopaMenu can read your actual schedule
+            Connect a calendar so DopaMenu can read your actual schedule
             and create calendar blocks when you choose an action.
           </Text>
           <View style={styles.buttonRow}>
-            <ConnectButton label="Google" icon="logo-google" onPress={() => handleConnect('google')} />
-            <ConnectButton label="Outlook" icon="mail" onPress={() => handleConnect('outlook')} />
+            {googleAvailable && (
+              <ConnectButton label="Google" icon="logo-google" onPress={() => handleConnect('google')} />
+            )}
+            {outlookAvailable && (
+              <ConnectButton label="Outlook" icon="mail" onPress={() => handleConnect('outlook')} />
+            )}
             <ConnectButton label="Device" icon="phone-portrait" onPress={() => handleConnect('device')} />
           </View>
           <Text style={styles.disclaimer}>
