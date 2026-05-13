@@ -805,6 +805,7 @@ export default function RootLayout() {
           }}
         />
         <Stack.Screen name="ios-setup" options={{ headerShown: false }} />
+        <Stack.Screen name="oauthredirect" options={{ headerShown: false }} />
         <Stack.Screen
           name="onboarding/setup-automation"
           options={{ headerShown: false, presentation: 'card' }}

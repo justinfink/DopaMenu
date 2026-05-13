@@ -16,9 +16,11 @@ import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Card } from '../../src/components';
+import { CalendarCard } from '../../src/components/home';
 import { useUserStore } from '../../src/stores/userStore';
 import { useInterventionStore } from '../../src/stores/interventionStore';
 import { usePortfolioStore } from '../../src/stores/portfolioStore';
+import { useCalendarStore } from '../../src/stores/calendarStore';
 import { useCustomInterventionsStore } from '../../src/stores/customInterventionsStore';
 import { DEFAULT_IDENTITY_ANCHORS } from '../../src/models';
 import { analyticsService, AnalyticsEvents, notificationService, appUsageService } from '../../src/services';
@@ -57,6 +59,7 @@ export default function SettingsScreen() {
   const { user, updatePreferences, addIdentityAnchor, removeIdentityAnchor, reset: resetUser } = useUserStore();
   const { reset: resetInterventions } = useInterventionStore();
   const { reset: resetPortfolio } = usePortfolioStore();
+  const { reset: resetCalendar } = useCalendarStore();
   const { interventions: customInterventions } = useCustomInterventionsStore();
 
   const [expandedSection, setExpandedSection] = useState<string | null>(null);
@@ -430,6 +433,7 @@ export default function SettingsScreen() {
             resetUser();
             resetInterventions();
             resetPortfolio();
+            resetCalendar();
           },
         },
       ]
@@ -631,6 +635,8 @@ export default function SettingsScreen() {
             ))}
           </View>
         </SettingsSection>
+
+        <CalendarCard />
 
         {/* Weekly Recalibration */}
         <Card style={styles.toggleCard}>

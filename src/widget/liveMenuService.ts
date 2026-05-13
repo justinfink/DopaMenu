@@ -5,6 +5,7 @@ import { generateIntervention } from '../engine/InterventionEngine';
 import { getInterventionPool } from '../constants/interventions';
 import { getTimeBucket, getGreeting } from '../utils/helpers';
 import type { TimeBucket } from '../models';
+import type { CalendarEventItem } from '../models/calendar';
 
 // iOS widget shares App Group UserDefaults with the main app process — that's
 // the documented WidgetKit pattern. We import lazily so this module stays
@@ -87,14 +88,59 @@ function getLiveMenuSituation(): Situation {
   };
 }
 
+interface CalendarStorageState {
+  events?: CalendarEventItem[];
+}
+
+function deriveCalendarContext(events: CalendarEventItem[] | undefined): {
+  type?: SituationType;
+  cognitiveLoad?: 'low' | 'medium' | 'high';
+} {
+  if (!events || events.length === 0) return {};
+  const now = Date.now();
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const todayEnd = new Date(todayStart);
+  todayEnd.setHours(23, 59, 59, 999);
+  const timed = events
+    .filter((event) => !event.isAllDay)
+    .map((event) => ({
+      event,
+      start: new Date(event.startDate).getTime(),
+      end: new Date(event.endDate).getTime(),
+    }))
+    .filter(({ start, end }) => end >= todayStart.getTime() && start <= todayEnd.getTime());
+  const scheduledMinutes = timed.reduce((total, { start, end }) => {
+    const clippedStart = Math.max(start, todayStart.getTime());
+    const clippedEnd = Math.min(end, todayEnd.getTime());
+    return total + Math.max(0, Math.round((clippedEnd - clippedStart) / 60000));
+  }, 0);
+  const cognitiveLoad =
+    scheduledMinutes >= 240 || timed.length >= 6
+      ? 'high'
+      : scheduledMinutes >= 120 || timed.length >= 3
+      ? 'medium'
+      : 'low';
+  const justEnded = timed.some(({ end }) => end < now && now - end <= 30 * 60_000);
+  const nextSoon = timed.some(({ start }) => start > now && start - now <= 15 * 60_000);
+  return {
+    type: justEnded ? 'POST_MEETING_TRANSITION' : nextSoon ? 'WAITING_CONTEXT' : undefined,
+    cognitiveLoad,
+  };
+}
+
 export async function getLiveMenuData(): Promise<LiveMenuData | null> {
   const userRaw = await AsyncStorage.getItem('dopamenu-user-storage');
   const customRaw = await AsyncStorage.getItem(
     'dopamenu-custom-interventions-storage',
   );
+  const calendarRaw = await AsyncStorage.getItem('dopamenu-calendar-storage');
 
   const userState = userRaw ? JSON.parse(userRaw) : null;
   const customState = customRaw ? JSON.parse(customRaw) : null;
+  const calendarState: CalendarStorageState | null = calendarRaw
+    ? JSON.parse(calendarRaw)?.state ?? null
+    : null;
 
   const user: User | null = userState?.state?.user ?? null;
   if (!user) return null;
@@ -104,6 +150,13 @@ export async function getLiveMenuData(): Promise<LiveMenuData | null> {
   const pool = [...getInterventionPool(user), ...customInterventions];
 
   const situation = getLiveMenuSituation();
+  const calendarContext = deriveCalendarContext(calendarState?.events);
+  if (calendarContext.type) {
+    situation.type = calendarContext.type;
+  }
+  if (calendarContext.cognitiveLoad) {
+    situation.context.recentCognitiveLoad = calendarContext.cognitiveLoad;
+  }
   const decision = generateIntervention(situation, user, pool);
 
   // Promote the first launchable alternative if the picked primary is an

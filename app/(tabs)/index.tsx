@@ -11,7 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Card, ProgressRing, NotificationsDeniedBanner } from '../../src/components';
-import { LiveMenu, ChoresList, QuickEditPanel } from '../../src/components/home';
+import { LiveMenu, ChoresList, QuickEditPanel, CalendarCard } from '../../src/components/home';
 import { useUserStore } from '../../src/stores/userStore';
 import { usePortfolioStore } from '../../src/stores/portfolioStore';
 import { getGreeting, getTimeBucket } from '../../src/utils/helpers';
@@ -109,6 +109,8 @@ export default function DashboardScreen() {
 
         {/* Hero — calibrated live menu */}
         <LiveMenu onEditQuietHours={handleEditQuietHours} />
+
+        <CalendarCard />
 
         {/* Today's chores (off-phone tasks) */}
         <ChoresList />

@@ -3,6 +3,16 @@
 
 const POSTHOG_API_KEY = process.env.POSTHOG_API_KEY || '';
 const POSTHOG_HOST = process.env.POSTHOG_HOST || 'https://app.posthog.com';
+const GOOGLE_CALENDAR_IOS_CLIENT_ID =
+  process.env.GOOGLE_CALENDAR_IOS_CLIENT_ID || '';
+const GOOGLE_CALENDAR_ANDROID_CLIENT_ID =
+  process.env.GOOGLE_CALENDAR_ANDROID_CLIENT_ID || '';
+const GOOGLE_CALENDAR_WEB_CLIENT_ID =
+  process.env.GOOGLE_CALENDAR_WEB_CLIENT_ID || '';
+const MICROSOFT_CALENDAR_CLIENT_ID =
+  process.env.MICROSOFT_CALENDAR_CLIENT_ID || '';
+const CALENDAR_OAUTH_REDIRECT_URI =
+  process.env.CALENDAR_OAUTH_REDIRECT_URI || '';
 
 // Keep in sync with IOS_QUERY_SCHEMES in src/constants/appCatalog.ts.
 // Required so Linking.canOpenURL() can probe whether an app is installed on iOS.
@@ -86,9 +96,11 @@ export default {
       [
         'expo-calendar',
         {
-          calendarPermission: 'DopaMenu uses your calendar to understand your schedule.',
+          calendarPermission:
+            'DopaMenu uses your calendar to understand your schedule, show relevant context, and create calendar blocks when you ask it to.',
         },
       ],
+      'expo-web-browser',
       'expo-font',
       // Custom plugin for Android app usage detection
       './plugins/app-usage/withAppUsage',
@@ -140,6 +152,11 @@ export default {
       // Environment variables exposed to the app
       posthogApiKey: POSTHOG_API_KEY,
       posthogHost: POSTHOG_HOST,
+      googleCalendarIosClientId: GOOGLE_CALENDAR_IOS_CLIENT_ID,
+      googleCalendarAndroidClientId: GOOGLE_CALENDAR_ANDROID_CLIENT_ID,
+      googleCalendarWebClientId: GOOGLE_CALENDAR_WEB_CLIENT_ID,
+      microsoftCalendarClientId: MICROSOFT_CALENDAR_CLIENT_ID,
+      calendarOAuthRedirectUri: CALENDAR_OAUTH_REDIRECT_URI,
     },
   },
 };
