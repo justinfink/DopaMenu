@@ -1,5 +1,5 @@
 import React from 'react';
-import { FlexWidget, TextWidget } from 'react-native-android-widget';
+import { FlexWidget, ListWidget, TextWidget } from 'react-native-android-widget';
 import type { InterventionCandidate } from '../models';
 import { getWidgetIcon, getTimeBucketLabel, EFFORT_LABELS } from './iconMap';
 import type { LiveMenuData } from './liveMenuService';
@@ -50,6 +50,7 @@ function InterventionRow({
         borderColor: isPrimary ? COLOR_PRIMARY : COLOR_BORDER_SOFT,
         paddingHorizontal: 14,
         paddingVertical: 12,
+        marginBottom: 8,
         width: 'match_parent',
       }}
       clickAction="OPEN_URI"
@@ -194,18 +195,24 @@ export function DopaMenuWidget({ data }: DopaMenuWidgetProps) {
           style={{
             flex: 1,
             flexDirection: 'column',
-            flexGap: 8,
             width: 'match_parent',
           }}
         >
-          <InterventionRow intervention={data.primary} isPrimary />
-          {data.alternatives.map((alt) => (
-            <InterventionRow
-              key={alt.id}
-              intervention={alt}
-              isPrimary={false}
-            />
-          ))}
+          <ListWidget
+            style={{
+              width: 'match_parent',
+              height: 'match_parent',
+            }}
+          >
+            <InterventionRow intervention={data.primary} isPrimary />
+            {data.alternatives.map((alt) => (
+              <InterventionRow
+                key={alt.id}
+                intervention={alt}
+                isPrimary={false}
+              />
+            ))}
+          </ListWidget>
         </FlexWidget>
       ) : (
         <EmptyState />

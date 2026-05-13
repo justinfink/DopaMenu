@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -71,6 +71,7 @@ export function ChoresList() {
   const getChoresForToday = useChoresStore((s) => s.getChoresForToday);
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState('');
+  const submittedDraftRef = useRef<string | null>(null);
 
   // Recompute todays list when chores change. We pass `chores` through the
   // selector so we re-render on add/delete, then call the helper to apply
@@ -86,6 +87,8 @@ export function ChoresList() {
       setAdding(false);
       return;
     }
+    if (submittedDraftRef.current === trimmed) return;
+    submittedDraftRef.current = trimmed;
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     addChore({ label: trimmed, cadence: 'daily' });
     setDraft('');
@@ -158,6 +161,7 @@ export function ChoresList() {
         <TouchableOpacity
           onPress={() => {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            submittedDraftRef.current = null;
             setAdding(true);
           }}
           style={styles.addCta}

@@ -3,11 +3,11 @@ import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   TouchableOpacity,
   RefreshControl,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Card, ProgressRing, NotificationsDeniedBanner } from '../../src/components';
@@ -69,7 +69,7 @@ export default function DashboardScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <NotificationsDeniedBanner />
       <ScrollView
         ref={scrollRef}
@@ -180,6 +180,7 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: spacing.md,
+    paddingTop: spacing.sm,
     paddingBottom: spacing.xxl,
   },
   header: {
@@ -187,7 +188,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: spacing.lg,
-    paddingTop: spacing.md,
   },
   greeting: {
     fontSize: typography.sizes.xxl,

@@ -96,25 +96,25 @@ export async function getLiveMenuData(): Promise<LiveMenuData | null> {
   // on-phone item with no resolvable launch path. Eliminates the "tap does
   // nothing" footgun that bit the widget.
   let primary = decision.primary;
-  let alternatives = decision.alternatives.slice(0, 2);
+  let alternatives = decision.alternatives.slice(0, 3);
   if (!isLaunchable(primary)) {
     const launchableAlt = decision.alternatives.find(isLaunchable);
     if (launchableAlt) {
       primary = launchableAlt;
       alternatives = decision.alternatives
         .filter((c) => c.id !== launchableAlt.id)
-        .slice(0, 2);
+        .slice(0, 3);
     }
   }
 
   // Filter alternatives the same way — never render a row whose tap won't do
-  // anything. Falls back to the first 2 launchable candidates from the pool
+  // anything. Falls back to the first 3 launchable candidates from the pool
   // (excluding primary) if filtering empties the list.
   alternatives = alternatives.filter(isLaunchable);
-  if (alternatives.length < 2) {
+  if (alternatives.length < 3) {
     const filler = pool
       .filter((c) => c.id !== primary.id && isLaunchable(c))
-      .slice(0, 2 - alternatives.length);
+      .slice(0, 3 - alternatives.length);
     alternatives = [...alternatives, ...filler];
   }
 
@@ -156,7 +156,7 @@ function projectForIosWidget(data: LiveMenuData): IosWidgetMenuPayload {
   });
   return {
     primary: project(data.primary),
-    alternatives: data.alternatives.slice(0, 2).map(project),
+    alternatives: data.alternatives.slice(0, 3).map(project),
     timeBucket: data.timeBucket,
     greeting: data.greeting,
     updatedAt: Date.now(),

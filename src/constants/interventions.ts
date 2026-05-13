@@ -344,6 +344,89 @@ const FALLBACK_MODALITY: ModalityVector = {
   expressiveConsumptive: 0,
 };
 
+const REDIRECT_ICON_BY_ID: Record<string, string> = {
+  chesscom: 'game-controller',
+  lichess: 'game-controller',
+  kindle: 'book',
+  libby: 'library',
+  'apple-books': 'book',
+  'google-play-books': 'book',
+  readwise: 'bookmarks',
+  headspace: 'leaf',
+  calm: 'moon',
+  'waking-up': 'leaf',
+  'insight-timer': 'timer',
+  duolingo: 'language',
+  anki: 'school',
+  babbel: 'language',
+  audible: 'headset',
+  spotify: 'musical-notes',
+  'apple-podcasts': 'mic',
+  overcast: 'mic',
+  pocketcasts: 'headset',
+  notes: 'document-text',
+  bear: 'create',
+  obsidian: 'journal',
+  dayone: 'journal',
+  strava: 'bicycle',
+  'nike-run': 'walk',
+  allTrails: 'map',
+  khan: 'school',
+  brilliant: 'bulb',
+  procreate: 'brush',
+  garageband: 'musical-notes',
+  todoist: 'checkbox',
+  things: 'checkbox',
+  castbox: 'headset',
+  'podcast-addict': 'headset',
+  'player-fm': 'headset',
+  podbean: 'headset',
+  'npr-one': 'radio',
+  storytel: 'book',
+  'smiling-mind': 'leaf',
+  balance: 'leaf',
+  'ten-percent': 'leaf',
+  goodreads: 'book',
+  pocket: 'bookmark',
+  blinkist: 'book',
+  ted: 'school',
+  memrise: 'language',
+  coursera: 'school',
+  masterclass: 'school',
+  strong: 'barbell',
+  'nike-training': 'fitness',
+  'down-dog': 'body',
+  peloton: 'bicycle',
+  merlin: 'search',
+  seek: 'leaf',
+  notion: 'create',
+  forest: 'leaf',
+  opal: 'diamond',
+};
+
+const REDIRECT_ICON_BY_CATEGORY: Record<string, string> = {
+  chess: 'game-controller',
+  reading: 'book',
+  meditation: 'leaf',
+  language: 'language',
+  learning: 'school',
+  audio: 'headset',
+  music: 'musical-notes',
+  notes: 'document-text',
+  fitness: 'fitness',
+  nature: 'leaf',
+  creative: 'brush',
+  productivity: 'checkbox',
+};
+
+function iconForRedirectApp(app: RedirectAppConfig): string {
+  return (
+    REDIRECT_ICON_BY_ID[app.catalogId] ||
+    (app.category ? REDIRECT_ICON_BY_CATEGORY[app.category] : undefined) ||
+    'open-outline'
+  );
+}
+
 /** Build an InterventionCandidate from a user-selected redirect app. */
 export function redirectAppToCandidate(app: RedirectAppConfig): InterventionCandidate {
   const modality = (app.category && CATEGORY_MODALITIES[app.category]) || FALLBACK_MODALITY;
@@ -359,7 +442,7 @@ export function redirectAppToCandidate(app: RedirectAppConfig): InterventionCand
     launchAppPackage: app.androidPackage,
     launchIosScheme: app.iosScheme,
     identityTags: [],
-    icon: 'open-outline',
+    icon: iconForRedirectApp(app),
   };
 }
 
