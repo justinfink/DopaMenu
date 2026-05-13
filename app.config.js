@@ -14,6 +14,18 @@ const MICROSOFT_CALENDAR_CLIENT_ID =
 const CALENDAR_OAUTH_REDIRECT_URI =
   process.env.CALENDAR_OAUTH_REDIRECT_URI || '';
 
+const googleNativeScheme = (clientId) => {
+  if (!clientId) return '';
+  const id = clientId.replace(/\.apps\.googleusercontent\.com$/, '');
+  return id ? `com.googleusercontent.apps.${id}` : '';
+};
+
+const APP_SCHEMES = [
+  'dopamenu',
+  googleNativeScheme(GOOGLE_CALENDAR_IOS_CLIENT_ID),
+  googleNativeScheme(GOOGLE_CALENDAR_ANDROID_CLIENT_ID),
+].filter(Boolean);
+
 // Keep in sync with IOS_QUERY_SCHEMES in src/constants/appCatalog.ts.
 // Required so Linking.canOpenURL() can probe whether an app is installed on iOS.
 const LS_APPLICATION_QUERIES_SCHEMES = [
@@ -37,7 +49,7 @@ export default {
     version: '1.0.0',
     orientation: 'portrait',
     icon: './assets/images/icon.png',
-    scheme: 'dopamenu',
+    scheme: APP_SCHEMES,
     userInterfaceStyle: 'automatic',
     newArchEnabled: true,
     splash: {
@@ -47,6 +59,7 @@ export default {
     },
     ios: {
       supportsTablet: true,
+      appleTeamId: 'M7CDD4UUDS',
       bundleIdentifier: 'ai.dopamenu.app',
       infoPlist: {
         NSCalendarsUsageDescription:

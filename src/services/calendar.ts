@@ -22,6 +22,7 @@ import {
 WebBrowser.maybeCompleteAuthSession();
 
 const TOKEN_KEY_PREFIX = 'dopamenu-calendar-token';
+const REDIRECT_PATH = 'oauthredirect';
 const GOOGLE_SCOPES = ['openid', 'email', 'profile', 'https://www.googleapis.com/auth/calendar'];
 const OUTLOOK_SCOPES = ['openid', 'profile', 'email', 'offline_access', 'User.Read', 'Calendars.ReadWrite'];
 const DEFAULT_RANGE_DAYS = 14;
@@ -63,7 +64,7 @@ function getRedirectUri(): string {
   if (configured) return configured;
   return AuthSession.makeRedirectUri({
     scheme: 'dopamenu',
-    path: 'oauthredirect',
+    path: REDIRECT_PATH,
   });
 }
 
@@ -81,6 +82,23 @@ function getGoogleClientId(config = getProviderConfig()): string {
   if (Platform.OS === 'ios') return config.googleIosClientId || config.googleWebClientId;
   if (Platform.OS === 'android') return config.googleAndroidClientId || config.googleWebClientId;
   return config.googleWebClientId;
+}
+
+function getGoogleNativeScheme(clientId: string): string {
+  const id = clientId.replace(/\.apps\.googleusercontent\.com$/, '');
+  return id ? `com.googleusercontent.apps.${id}` : '';
+}
+
+function getOAuthRedirectUri(provider: 'google' | 'outlook', clientId: string, config: ProviderConfig): string {
+  if (provider === 'google' && (Platform.OS === 'ios' || Platform.OS === 'android')) {
+    const scheme = getGoogleNativeScheme(clientId);
+    if (scheme) {
+      return AuthSession.makeRedirectUri({
+        native: `${scheme}:/${REDIRECT_PATH}`,
+      });
+    }
+  }
+  return config.redirectUri;
 }
 
 function tokenKey(accountId: string): string {
@@ -340,11 +358,12 @@ async function connectOAuthProvider(provider: 'google' | 'outlook'): Promise<Cal
         : 'Missing Microsoft Calendar OAuth client ID.',
     );
   }
+  const redirectUri = getOAuthRedirectUri(provider, clientId, config);
 
   const request = new AuthRequest({
     clientId,
     responseType: ResponseType.Code,
-    redirectUri: config.redirectUri,
+    redirectUri,
     scopes: provider === 'google' ? GOOGLE_SCOPES : OUTLOOK_SCOPES,
     usePKCE: true,
     codeChallengeMethod: CodeChallengeMethod.S256,
@@ -361,7 +380,7 @@ async function connectOAuthProvider(provider: 'google' | 'outlook'): Promise<Cal
   const token = await exchangeCode(
     provider,
     clientId,
-    config.redirectUri,
+    redirectUri,
     result.params.code,
     request.codeVerifier,
   );
