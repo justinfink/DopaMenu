@@ -129,13 +129,14 @@ export default function InterventionScreen() {
 
   const [showAlternatives, setShowAlternatives] = useState(false);
   const [selectedAlternative, setSelectedAlternative] = useState<InterventionCandidate | null>(null);
-  // Catalog entries to show as Continue chips when we don't know which trigger
-  // app fired (Path B / iOS tap-free automation — Apple doesn't pass the app
-  // through to the AppIntent). Computed once on mount: on iOS 16+ we probe
-  // the popular problem apps for installed status (since user.trackedApps is
-  // empty when Apple's native picker is used); on iOS 15 / Android we fall
-  // back to the user's own trackedApps list.
+  // Catalog entries to show only for the true iOS automation fallback where
+  // Apple does not pass the originating app through the AppIntent.
   const [continueOptions, setContinueOptions] = useState<AppCatalogEntry[]>([]);
+  const isUnknownIosAutomation =
+    Platform.OS === 'ios' &&
+    activeIntervention?.source === 'ios_automation' &&
+    !activeTriggerPackage &&
+    !activeTriggerLabel;
 
   const slideAnim = useRef(new Animated.Value(SCREEN_HEIGHT)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -179,14 +180,14 @@ export default function InterventionScreen() {
     };
   }, []);
 
-  // Populate the Continue-chip row when we don't know the trigger app. On
-  // iOS 16+ we have no trackedApps list (Apple's tokens are opaque), so we
-  // probe popular catalog entries for installed status. On iOS 15 / Android
-  // we use the user's own trackedApps list — they explicitly picked these
-  // in onboarding, so they're the most likely set of apps the user was
-  // reaching for.
+  // Populate the Continue-chip row only for the iOS automation path. Widget
+  // and home-menu suggestions are self-initiated DopaMenu surfaces, so they
+  // must not offer a jump into addictive apps when no trigger app exists.
   useEffect(() => {
-    if (activeTriggerPackage || activeTriggerLabel) return; // Path A — no chip row needed
+    if (!isUnknownIosAutomation) {
+      setContinueOptions([]);
+      return;
+    }
     let cancelled = false;
     (async () => {
       const fromTracked = (user?.preferences.trackedApps ?? [])
@@ -211,7 +212,7 @@ export default function InterventionScreen() {
     return () => {
       cancelled = true;
     };
-  }, [activeTriggerPackage, activeTriggerLabel, user]);
+  }, [isUnknownIosAutomation, user]);
 
   // closeAndExit: animate out, clear store, then route the user somewhere
   // sensible based on what they just did:
@@ -603,13 +604,9 @@ export default function InterventionScreen() {
                 originating app. Path A (Shield-fired or Android FGS-fired)
                 always passes a trigger label/package, so we render the
                 standard single-tap "Continue what I was doing" link that
-                routes them right back. Path B (iOS tap-free Personal
-                Automation) doesn't pipe the trigger app through Apple's
-                AppIntent perform context, so we render a quick chip row of
-                their tracked apps + popular suggestions; one tap on the app
-                they meant suppresses the Shield and deep-links them there.
-                Either way it's one tap from this screen back into the app —
-                no setup-time per-automation wiring required. */}
+                routes them right back. The app picker is limited to the true
+                iOS automation fallback, where Apple withholds the origin app.
+                Widget/home recommendations with no origin only close. */}
             {(activeTriggerLabel || activeTriggerPackage) ? (
               <TouchableOpacity
                 style={styles.continueButton}
@@ -617,7 +614,7 @@ export default function InterventionScreen() {
               >
                 <Text style={styles.continueText}>Continue what I was doing</Text>
               </TouchableOpacity>
-            ) : continueOptions.length > 0 ? (
+            ) : isUnknownIosAutomation && continueOptions.length > 0 ? (
               <View style={styles.continuePickerWrap}>
                 <Text style={styles.continuePickerLabel}>
                   Continue to which one?

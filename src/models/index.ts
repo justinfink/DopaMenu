@@ -302,6 +302,7 @@ export interface InterventionDecision {
   alternatives: InterventionCandidate[];
   explanation: string;
   timestamp: number;
+  source?: 'home' | 'widget' | 'ios_automation' | 'intercept' | 'notification';
 }
 
 // ============================================

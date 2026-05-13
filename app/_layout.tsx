@@ -348,6 +348,7 @@ export default function RootLayout() {
         buildPool(),
         triggerPackageName ? { triggerPackageName } : undefined,
       );
+      decision.source = 'ios_automation';
       showIntervention(decision, situation, triggerPackageName, triggerLabel);
       router.push('/intervention');
     };
@@ -675,6 +676,11 @@ export default function RootLayout() {
           buildPool(),
           { triggerPackageName }
         );
+        if (source === 'automation') {
+          decision.source = 'ios_automation';
+        } else {
+          decision.source = triggerPackageName || triggerLabel ? 'intercept' : undefined;
+        }
         showIntervention(decision, situation, triggerPackageName, triggerLabel);
         router.push('/intervention');
       }

@@ -32,7 +32,7 @@ export interface LaunchOrShowOptions {
   // What to attribute this surface as in analytics / decision metadata. The
   // off-phone fallback wraps the intervention in a synthetic decision and
   // tags it with this string.
-  source?: string;
+  source?: InterventionDecision['source'];
 }
 
 // Shared "open this intervention" path. Used by the widget deep link AND the
@@ -71,6 +71,7 @@ export async function launchOrShow(
       ? 'From your widget'
       : 'From your home menu',
     timestamp: Date.now(),
+    source: options.source,
   };
 
   useInterventionStore.getState().showIntervention(decision, situation);
