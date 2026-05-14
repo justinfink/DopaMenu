@@ -81,7 +81,7 @@ export default {
         backgroundColor: '#F8F6FA',
       },
       package: 'ai.dopamenu.app',
-      versionCode: 18,
+      versionCode: 19,
       permissions: [
         'android.permission.READ_CALENDAR',
         'android.permission.RECEIVE_BOOT_COMPLETED',
