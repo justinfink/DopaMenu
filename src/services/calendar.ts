@@ -101,12 +101,17 @@ function getOAuthRedirectUri(provider: 'google' | 'outlook', clientId: string, c
   return config.redirectUri;
 }
 
+function tokenKeyPart(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]/g, (char) => `_${char.charCodeAt(0).toString(16)}_`);
+}
+
 function tokenKey(accountId: string): string {
-  return `${TOKEN_KEY_PREFIX}:${accountId}`;
+  return `${TOKEN_KEY_PREFIX}.${tokenKeyPart(accountId)}`;
 }
 
 async function saveToken(accountId: string, token: StoredToken): Promise<void> {
-  await secureStorage.set(tokenKey(accountId), JSON.stringify(token));
+  const saved = await secureStorage.set(tokenKey(accountId), JSON.stringify(token));
+  if (!saved) throw new Error('Could not securely save calendar credentials.');
 }
 
 async function readToken(accountId: string): Promise<StoredToken | null> {
