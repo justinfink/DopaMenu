@@ -35,6 +35,10 @@ add the full Calendar scope in Google Auth Platform > Data Access.
 For Android Play Store builds, use the Play App Signing certificate SHA-1, not
 only the upload key SHA-1.
 
+For the Android OAuth client, open Advanced settings and enable Custom URI
+scheme. Without this setting, Google rejects the native redirect with
+`Custom URI scheme is not enabled for your Android client`.
+
 Scopes requested:
 
 ```text
