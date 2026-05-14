@@ -162,20 +162,22 @@ export function CalendarCard() {
       {!connected ? (
         <View>
           <Text style={styles.body}>
-            Connect a calendar so DopaMenu can read your actual schedule
-            and create calendar blocks when you choose an action.
+            Connect your phone calendar so DopaMenu can read your real schedule
+            and create blocks when you choose an action. Google account sync is
+            also available for testers with OAuth access.
           </Text>
           <View style={styles.buttonRow}>
+            <ConnectButton label="Phone calendars" icon="phone-portrait" onPress={() => handleConnect('device')} />
             {googleAvailable && (
               <ConnectButton label="Google" icon="logo-google" onPress={() => handleConnect('google')} />
             )}
             {outlookAvailable && (
               <ConnectButton label="Outlook" icon="mail" onPress={() => handleConnect('outlook')} />
             )}
-            <ConnectButton label="Device" icon="phone-portrait" onPress={() => handleConnect('device')} />
           </View>
           <Text style={styles.disclaimer}>
-            Full title, location, notes, attendee, and write access is requested. You can disconnect any time.
+            Full title, location, notes, attendee, and write access is requested.
+            You can disconnect any time.
           </Text>
         </View>
       ) : (
@@ -245,7 +247,12 @@ function ConnectButton({
   onPress: () => void;
 }) {
   return (
-    <TouchableOpacity style={styles.connectButton} onPress={onPress}>
+    <TouchableOpacity
+      style={styles.connectButton}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`Connect ${label}`}
+    >
       <Ionicons name={icon} size={16} color={colors.primary} />
       <Text style={styles.connectText}>{label}</Text>
     </TouchableOpacity>

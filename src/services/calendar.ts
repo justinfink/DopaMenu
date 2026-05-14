@@ -128,6 +128,17 @@ function toIso(value: string | Date | undefined): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
 
+function graphDateTimeToIso(value?: { dateTime?: string; timeZone?: string }): string {
+  if (!value?.dateTime) return new Date().toISOString();
+  const raw = value.dateTime;
+  const hasOffset = /(?:z|[+-]\d{2}:?\d{2})$/i.test(raw);
+  if (hasOffset) return new Date(raw).toISOString();
+  if ((value.timeZone || '').toUpperCase() === 'UTC') {
+    return new Date(`${raw}Z`).toISOString();
+  }
+  return new Date(raw).toISOString();
+}
+
 function addDays(date: Date, days: number): Date {
   const next = new Date(date);
   next.setDate(next.getDate() + days);
@@ -244,8 +255,8 @@ function normalizeOutlookEvent(accountId: string, calendarId: string, item: any)
     notes: item.bodyPreview || item.body?.content,
     location: item.location?.displayName,
     url: item.webLink,
-    startDate: toIso(item.start?.dateTime),
-    endDate: toIso(item.end?.dateTime),
+    startDate: graphDateTimeToIso(item.start),
+    endDate: graphDateTimeToIso(item.end),
     isAllDay: !!item.isAllDay,
     availability: item.showAs,
     status: item.isCancelled ? 'cancelled' : 'confirmed',
@@ -624,7 +635,7 @@ export const calendarService = {
     if (!calendarId) throw new Error('Choose a writable calendar first.');
 
     if (account.provider === 'device') {
-      return Calendar.createEventAsync(calendarId, {
+      const id = await Calendar.createEventAsync(calendarId, {
         title: input.title,
         notes: input.notes,
         location: input.location,
@@ -632,6 +643,8 @@ export const calendarService = {
         endDate: input.endDate,
         allDay: input.allDay,
       });
+      await this.syncAccount(account.id);
+      return id;
     }
 
     const accessToken = await getFreshToken(account);
